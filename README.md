@@ -1,4 +1,5 @@
 # backsim
+
 (Truly) minimal and flexible backtesting for Python
 
 This is a lightweight, event-driven backtesting framework written in pure Python. It focuses on **core backtesting logic**—time iteration, order execution, and portfolio accounting—while giving users the freedom to handle their own data ingestion, indicator computation, and plotting.
@@ -12,6 +13,7 @@ Backsim hence aims to:
 - **Stay minimal**: Provide backtesting essentials with a modular design. It will attempt to thread the needle between offering sufficient out of the box functionality and yet keeping features optional/modular and extensible.
 - **Stay flexible**: Use simple data interfaces so you can bring your own data, transformations, and charting tools.
 - **Offer clarity**: Keep the code readable and well-documented, making it easy to extend or optimize.
+- **Be strategy-first**: Allow the user to "drop in" their strategy logic without having to make data transforms to fit the framework.
 
 ### Features
 
