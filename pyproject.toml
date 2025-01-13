@@ -7,6 +7,33 @@ name = "backsim"
 version = "0.1.0"
 description = "A backtesting simulator"
 requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "0xEljh", email = "elijah@0xeljh.com" }
+]
+keywords = ["finance", "backtesting", "trading", "simulation"]
+
+dependencies = [
+    "pandas>=2.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=22.0.0",
+    "isort>=5.0.0",
+]
 
 [tool.setuptools]
 packages = ["backsim"]
+
+[tool.black]
+line-length = 88
+target-version = ["py38"]
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88

@@ -2,8 +2,10 @@
 Broker implementation for order execution and fill simulation.
 """
 from datetime import datetime
-from typing import Protocol, Optional
+from typing import Protocol, Optional, List
 import logging
+import pandas as pd
+import numpy as np
 from .portfolio import Portfolio, Order, OrderStatus, OrderType, OrderSide
 from .universe import AssetUniverse
 
@@ -52,6 +54,46 @@ class FixedSlippage:
         return market_price * slippage_factor
 
 
+
+class PriceMatrixView:
+    """
+    Provides a clean interface for price matrix operations.
+    Wraps a price matrix DataFrame with (datetime, symbol) multi-index.
+    """
+    
+    def __init__(self, price_matrix: pd.DataFrame):
+        """
+        Initialize with a price matrix DataFrame.
+        
+        Args:
+            price_matrix: DataFrame with (datetime, symbol) multi-index
+        """
+        self._price_matrix = price_matrix.ffill()
+        
+    def get_price(self, symbol: str, timestamp: datetime) -> Optional[float]:
+        """Get the latest price for a symbol at the given timestamp."""
+        try:
+            return (
+                self._price_matrix
+                .loc[:timestamp, symbol]
+                .iloc[-1:]
+                .squeeze() # convert to scalar
+            )
+        except (KeyError, IndexError):
+            return None
+        
+    def get_prices(self, timestamp: datetime) -> pd.Series:
+        """Get all prices for all symbols at or before the given timestamp."""
+        return (
+            self._price_matrix
+            .loc[:timestamp]
+            .reset_index(level=0)  
+            .groupby('symbol', sort=False)
+            .last()  
+            .squeeze(axis=1)  # Return as Series
+        )
+
+
 class Broker:
     """
     Simulates order execution and generates fills.
@@ -59,6 +101,7 @@ class Broker:
     def __init__(
         self,
         asset_universe: AssetUniverse,
+        price_matrix: pd.DataFrame,
         slippage_model: Optional[SlippageModel] = None,
         fill_delay: int = 0
     ):
@@ -67,11 +110,13 @@ class Broker:
 
         Args:
             asset_universe: AssetUniverse for price data
+            price_matrix: DataFrame with price data
             slippage_model: Optional model for price slippage
             fill_delay: Number of time steps to delay fills
         """
         self.asset_universe = asset_universe
-        self.slippage_model = slippage_model or FixedSlippage()
+        self.price_view = PriceMatrixView(price_matrix)
+        self.slippage_model = slippage_model
         self.fill_delay = fill_delay
 
     def process_fills(self, portfolio: Portfolio, timestamp: datetime):
@@ -95,35 +140,32 @@ class Broker:
                 continue
 
             # Get current market price
-            market_price = self.asset_universe.get_last_price(
-                order.symbol,
-                timestamp=timestamp
-            )
-            logger.debug(f"Market price for {order.symbol}: {market_price}")
-
-            # Check if limit order can be filled
+            market_price = self.price_view.get_price(order.symbol, timestamp)
+            
+            # if market_price is None:
+            #     market_price = self.asset_universe.get_last_price(
+            #         order.symbol,
+            #         timestamp=timestamp
+            #     )
+                
+            # For limit orders, check if price conditions are met
             if order.order_type == OrderType.LIMIT:
-                if (order.side == OrderSide.BUY and market_price > order.limit_price) or \
-                   (order.side == OrderSide.SELL and market_price < order.limit_price):
-                    logger.debug(f"Limit order price not met. Market: {market_price}, Limit: {order.limit_price}")
-                    continue  # Skip if limit price not met
-
+                if order.side == OrderSide.BUY and market_price > order.limit_price:
+                    continue
+                if order.side == OrderSide.SELL and market_price < order.limit_price:
+                    continue
+            
             # Calculate fill price with slippage
-            fill_price = self.slippage_model.get_fill_price(
-                order,
-                market_price,
-                timestamp
-            )
-            logger.debug(f"Fill price with slippage: {fill_price}")
-
-            # For limit orders, ensure fill price respects limit price
-            if order.order_type == OrderType.LIMIT:
-                if order.side == OrderSide.BUY and fill_price > order.limit_price:
-                    fill_price = order.limit_price
-                elif order.side == OrderSide.SELL and fill_price < order.limit_price:
-                    fill_price = order.limit_price
-                logger.debug(f"Adjusted fill price for limit order: {fill_price}")
-
-            # Fill the order in portfolio
-            logger.info(f"Filling order: {order.symbol} {order.side} {order.order_type} at {fill_price}")
-            portfolio.fill_order(order, fill_price)
+            # TODO: rewrite this terrible implementation
+            # slippage_model should be much more flexible in its approach
+            # if self.slippage_model is None:
+            #     fill_price = market_price
+            # else:
+            #     fill_price = self.slippage_model.get_fill_price(
+            #         order,
+            #         market_price,
+            #         timestamp
+            #     )
+            
+            # Process the fill
+            portfolio.fill_order(order, fill_price, self)

@@ -1,10 +1,12 @@
 """
-AssetUniverse implementation for managing price/volume data.
+AssetUniverse implementation for storing OHLCV data in a multi-index DataFrame.
 """
 
-from datetime import datetime
-from typing import Dict, List, Any, Optional
+from __future__ import annotations
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Any, Union
+import pandas as pd
 
 
 @dataclass
@@ -17,89 +19,274 @@ class DataSliceRequest:
     frequency: str
 
 
+OHLCV_COLS = ["open", "high", "low", "close", "volume"]
+
+
+@dataclass
+class DataSliceRequest:
+    """
+    Data slice request parameters.
+    """
+    symbols: List[str]
+    fields: List[str]  # e.g. ["open", "high", "low", "close", "volume"]
+    lookback: int      # how many bars to look back
+    frequency: str
+
+
 class AssetUniverse:
     """
-    Manages standardized price/volume data for all assets in the simulation.
-    Provides consistent API for retrieving time-aligned price data.
+    Stores all asset data in a single multi-index DataFrame:
+
+        Index: (symbol, datetime)
+        Columns: [open, high, low, close, volume]
+
+    Provides multiple classmethods for easy instantiation from user data.
     """
 
-    def __init__(self, data_sources: List[Any], frequency: str = "1d"):
+    def __init__(self, df: pd.DataFrame):
         """
-        Initialize AssetUniverse with data sources.
+        Initialize with a multi-index DataFrame. Typically, you won't call this directly;
+        instead, use a classmethod (e.g. from_dict_of_dataframes, from_flat_df, etc.).
 
         Args:
-            data_sources: List of data source objects
-            frequency: Base time frequency for the universe
+            df: DataFrame with a MultiIndex (symbol, datetime) and columns = OHLCV_COLS
         """
-        self.data_sources = data_sources
-        self.frequency = frequency
-        self._data: Dict = {}  # Internal data store
-        self._initialize_data()
+        self._df = df
+        self._validate_df()
 
-    def _initialize_data(self):
-        """Load and align data from all data sources."""
-        # TODO: Implement data loading and alignment logic
-        pass
+    @classmethod
+    def from_dict_of_dataframes(cls, data: Dict[str, pd.DataFrame]) -> AssetUniverse:
+        """
+        Create an AssetUniverse from a dictionary of {symbol -> DataFrame},
+        each DataFrame having a DateTimeIndex and columns [open, high, low, close, volume].
+
+        Args:
+            data: dict of symbol -> DataFrame with OHLCV columns
+
+        Returns:
+            AssetUniverse instance
+        """
+        # Build a list of (symbol, sub_df) pairs, converting each to multi-index
+        df_list = []
+        for symbol, df_symbol in data.items():
+            # Ensure columns match expected
+            # (You can handle missing columns or rename as needed)
+            df_symbol = df_symbol.copy()
+            df_symbol = df_symbol[OHLCV_COLS]
+
+            # Add symbol to the index
+            # We'll build a multi-index: (symbol, datetime)
+            df_symbol.index = pd.MultiIndex.from_product(
+                [[symbol], df_symbol.index],
+                names=["symbol", "datetime"]
+            )
+            df_list.append(df_symbol)
+
+        # Concatenate all into a single DataFrame
+        if df_list:
+            df_all = pd.concat(df_list)
+        else:
+            # If empty, create an empty frame
+            df_all = pd.DataFrame(columns=OHLCV_COLS)
+            df_all.index = pd.MultiIndex(
+                levels=[[], []],
+                codes=[[], []],
+                names=["symbol", "datetime"]
+            )
+
+        # Sort the index for consistency
+        df_all.sort_index(inplace=True)
+        return cls(df_all)
+
+    @classmethod
+    def from_flat_df(
+        cls,
+        df: pd.DataFrame,
+        symbol_col: str = "symbol",
+        datetime_col: str = "datetime",
+        open_col: str = "open",
+        high_col: str = "high",
+        low_col: str = "low",
+        close_col: str = "close",
+        volume_col: str = "volume",
+    ) -> AssetUniverse:
+        """
+        Create an AssetUniverse from a single "flat" DataFrame with columns for symbol, datetime, and OHLCV.
+
+        Args:
+            df: A DataFrame with columns for symbol, datetime, open, high, low, close, volume
+            symbol_col: Name of the column containing symbols
+            datetime_col: Name of the column containing datetimes
+            open_col, high_col, low_col, close_col, volume_col: Column names for OHLCV
+
+        Returns:
+            AssetUniverse instance
+        """
+        # Rename columns to our standard set
+        renames = {
+            symbol_col: "symbol",
+            datetime_col: "datetime",
+            open_col: "open",
+            high_col: "high",
+            low_col: "low",
+            close_col: "close",
+            volume_col: "volume"
+        }
+        df_renamed = df.rename(columns=renames)
+
+        # Ensure we only keep the columns we need
+        df_renamed = df_renamed[["symbol", "datetime"] + OHLCV_COLS]]
+
+        # Set a multi-index
+        df_renamed.set_index(["symbol", "datetime"], inplace=True)
+        df_renamed.sort_index(inplace=True)
+        return cls(df_renamed)
+
+    @classmethod
+    def from_multiindex_df(cls, df: pd.DataFrame) -> AssetUniverse:
+        """
+        Create an AssetUniverse directly from a DataFrame that already has:
+            - A MultiIndex with (symbol, datetime)
+            - Columns = [open, high, low, close, volume]
+
+        Args:
+            df: Already well-formed multi-index DataFrame
+
+        Returns:
+            AssetUniverse instance
+        """
+        return cls(df)
+
+    def _validate_df(self):
+        """
+        Internal consistency checks, e.g. ensuring columns = [open, high, low, close, volume]
+        and that the index is a MultiIndex of (symbol, datetime).
+        """
+        # Check columns
+        expected = set(OHLCV_COLS)
+        actual = set(self._df.columns)
+        if expected != actual:
+            raise ValueError(
+                f"DataFrame must have columns {expected}, got {actual}"
+            )
+        # Check multi-index
+        if not isinstance(self._df.index, pd.MultiIndex):
+            raise ValueError("DataFrame index must be a MultiIndex (symbol, datetime).")
+
+        idx_names = list(self._df.index.names)
+        if idx_names != ["symbol", "datetime"]:
+            raise ValueError("MultiIndex must be named ['symbol', 'datetime'].")
+
+    # -------------------------------------------------------------------------
+    # Properties and Accessors
+    # -------------------------------------------------------------------------
+
+    @property
+    def symbols(self) -> List[str]:
+        """Unique list of symbols present in the universe."""
+        return list(self._df.index.levels[0])
+
+    @property
+    def datetimes(self) -> List[datetime]:
+        """Unique list of datetimes present in the universe."""
+        return list(self._df.index.levels[1])
+
+    @property
+    def df(self) -> pd.DataFrame:
+        """
+        Access the underlying multi-index DataFrame directly.
+        """
+        return self._df
+    
+    def get_price_matrix(self, price_agg_func: Optional[str|callable] = "close") -> pd.DataFrame:
+        """
+        Return a price matrix has the form of (symbol, datetime) -> price.
+
+        Args:
+            price_agg_func: Optional function to aggregate price ohlc data (default: "close" )
+
+        Returns:
+            pd.DataFrame with (symbol, datetime) -> price
+        """
+
+        if callable(price_agg_func):
+            return (
+                self._df
+                .groupby(level="symbol")
+                .agg(price_agg_func)
+                .reset_index()
+            )
+
+        if price_agg_func not in OHLCV_COLS:
+            raise ValueError(f"Invalid price_agg_func: {price_agg_func}")
+        
+        return (
+            self._df
+            # select the price column (open or close)
+            .groupby(level="symbol")
+            .agg({price_agg_func: "last"})
+            .reset_index()
+        )
+
+        
 
     def get_data_slice(
-        self, slice_request: DataSliceRequest, timestamp: datetime
-    ) -> Dict[str, Dict[str, List[float]]]:
-        """
-        Get a slice of price data for specified symbols and fields.
-
-        Args:
-            slice_request: DataSliceRequest containing slice parameters
-            timestamp: Current simulation timestamp
-
-        Returns:
-            Dict containing price data in format:
-            {
-                "SYMBOL": {
-                    "field": [values...]
-                }
-            }
-        """
-        # TODO: Implement proper data slicing
-        # This is a placeholder implementation
-        result = {}
-        for symbol in slice_request.symbols:
-            result[symbol] = {field: [] for field in slice_request.fields}
-        return result
-
-    def get_last_price(
-        self, symbol: str, field: str = "close", timestamp: Optional[datetime] = None
-    ) -> float:
-        """
-        Get the last available price for a symbol.
-
-        Args:
-            symbol: Asset symbol
-            field: Price field (open, high, low, close)
-            timestamp: Optional timestamp for historical prices
-
-        Returns:
-            float: Price value
-        """
-        # TODO: Implement last price lookup
-        return 0.0
-
-    def get_last_prices(
         self,
-        symbols: List[str],
-        timestamp: datetime,
-        field: str = "close",
-    ) -> Dict[str, float]:
+        slice_request: DataSliceRequest,
+        timestamp: datetime
+    ) -> pd.DataFrame:
         """
-        Get the last available prices for multiple symbols.
+        Return a data slice for the requested symbols, fields, and lookback.
+
+        We'll return the slice as a DataFrame with the multi-index intact,
+        but filtered to the symbols, fields, and the lookback bars up to `timestamp`.
 
         Args:
-            symbols: List of asset symbols
-            field: Price field (open, high, low, close)
+            slice_request: DataSliceRequest
             timestamp: Current simulation timestamp
 
         Returns:
-            Dict: Mapping of symbol to price
+            pd.DataFrame (multi-index) containing the requested slice
         """
+        # Step 1: Filter the universe to the requested symbols
+        idx = self._df.index.get_level_values("symbol").isin(slice_request.symbols)
+        df_filtered_symbols = self._df[idx]
 
-        # TODO Implement last prices lookup
-        return {}
+        # Step 2: Within each symbol, filter to rows up to `timestamp`
+        # We can group by symbol and then slice
+        frames = []
+        for symbol in slice_request.symbols:
+            # Try to slice for this symbol
+            try:
+                df_sym = df_filtered_symbols.loc[symbol]
+            except KeyError:
+                continue
+
+            df_sym_up_to_ts = df_sym.loc[:timestamp]
+            if slice_request.lookback > 0:
+                df_sym_up_to_ts = df_sym_up_to_ts.iloc[-slice_request.lookback :]
+
+            # Now only keep the requested fields
+            df_sym_up_to_ts = df_sym_up_to_ts[slice_request.fields]
+
+            # Reattach symbol to index so we preserve the multi-index shape
+            df_sym_up_to_ts.index = pd.MultiIndex.from_arrays(
+                [
+                    [symbol] * len(df_sym_up_to_ts),
+                    df_sym_up_to_ts.index
+                ],
+                names=["symbol", "datetime"]
+            )
+            frames.append(df_sym_up_to_ts)
+
+        if not frames:
+            return pd.DataFrame(columns=OHLCV_COLS, index=pd.MultiIndex(
+                levels=[[], []],
+                codes=[[], []],
+                names=["symbol", "datetime"]
+            ))
+
+        df_slice = pd.concat(frames)
+        df_slice.sort_index(inplace=True)
+        return df_slice
+
