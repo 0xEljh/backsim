@@ -290,3 +290,79 @@ class AssetUniverse:
         df_slice.sort_index(inplace=True)
         return df_slice
 
+
+class QuantityMatrix:
+    """Stores and manages quantity matrices for efficient position tracking.
+    Because pandas is slow for single-row updates, we'll only add values when there
+    is a change, and use ffill to populate the rest of the matrix when needed.
+    This is effectively a "sparse" matrix.
+    
+    In normal use, it should be initialized using metadata from AssetUniverse.
+
+    """
+    
+    def __init__(self, symbols: List[str], start_time: datetime, frequency: str = "1d"):
+        self.symbols = symbols
+        self.symbol_to_idx = {symbol: idx for idx, symbol in enumerate(symbols)}
+        self.start_time = start_time
+        self.frequency = frequency
+        self._quantity_matrix = pd.DataFrame(
+            0.0,  # Initialize with zeros instead of NaN since no position = 0
+            index=pd.date_range(start=start_time, freq=frequency, closed="left"),
+            columns=symbols
+        )
+
+        self.current_row = {} # internal storage for current row
+        self.current_time = start_time
+    
+    def update_quantity(self, symbol: str, timestamp: datetime, quantity: float):
+        """Update quantity for a symbol at given timestamp.
+        If the timestamp is the same as the current time, update the current row.
+        Else, update the quantity matrix.
+        """
+        if timestamp == self.current_time:
+            self.current_row[symbol] = quantity
+            return current_row
+        
+        # commit the current row
+        if self.current_row:
+            self._quantity_matrix.loc[self.current_time] = self.current_row
+            self.current_row = {}
+        
+        # update current time and row
+        self.current_time = timestamp
+        self.current_row[symbol] = quantity
+        
+        return self.current_row
+    
+    @property
+    def matrix(self):
+        # commit current row and return matrix
+        matrix = self._quantity_matrix.copy()
+        if self.current_row:
+            matrix.loc[self.current_time] = self.current_row
+        # forward fill the matrix, ensuring also that it has all rows for each timestamp
+        return (
+            matrix
+            .ffill()
+            .reindex(pd.date_range(start=self.start_time, freq=self.frequency, closed="left"), method="ffill")
+            .fillna(0.0)
+        )
+    
+    def get_matrix(self, up_to_timestamp: datetime):
+        # similar to matrix property, but may have to either slice or continue forward fill
+        if up_to_timestamp < self.current_time:
+            return (
+                self.matrix
+                .loc[:up_to_timestamp]
+            )
+        
+        return (
+            self.matrix
+            # add new row with nan values
+            .append(pd.DataFrame(np.nan, index=[up_to_timestamp], columns=self.symbols))
+            .ffill()
+            .reindex(pd.date_range(start=self.start_time, freq=self.frequency, closed="left"), method="ffill")
+            .fillna(0.0)
+        )
+            
