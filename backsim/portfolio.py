@@ -3,7 +3,7 @@ Portfolio implementation for tracking positions and orders.
 """
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 from dataclasses import dataclass
 from enum import Enum
 import pandas as pd
@@ -70,6 +70,11 @@ class Order:
             return None
         return abs(self.quantity * self.limit_price) / self.leverage_ratio
 
+    @property
+    def is_fully_filled(self):
+        if self.status != OrderStatus.FILLED:
+            return False
+        return self.filled_quantity == self.quantity
 
 @dataclass
 class Position:
@@ -196,45 +201,6 @@ class Portfolio:
             )
             self.open_orders.append(order)
 
-    # def update_position(self, filled_order: Order):
-    #     """
-    #     Update position after a fill.
-        
-    #     Args:
-    #         filled_order: Filled order to use for position update
-        
-    #     Raises:
-    #         ValueError: If order is not filled
-    #     """
-    #     if filled_order.status != OrderStatus.FILLED or filled_order.filled_price is None:
-    #         raise ValueError("Order must be filled before updating position")
-
-    #     symbol = filled_order.symbol
-    #     quantity = filled_order.quantity
-    #     price = filled_order.filled_price
-    #     leverage_ratio = filled_order.leverage_ratio
-
-    #     if symbol not in self.positions:
-    #         position_value = abs(quantity * price)
-    #         initial_margin = position_value / leverage_ratio
-    #         self.positions[symbol] = Position(
-    #             symbol=symbol,
-    #             quantity=0,
-    #             cost_basis=price,
-    #             initial_margin=initial_margin
-    #         )
-    #     else:
-    #         self.positions[symbol].update_from_order(filled_order)
-            
-    #     position = self.positions[symbol]
-
-    #     # update quantity matrix
-    #     self.quantity_matrix.update_quantity(symbol, filled_order.timestamp, position.quantity)
-        
-    #     # Remove position if quantity is zero
-    #     if position.is_zero:
-    #         del self.positions[symbol]
-
 
     def fill_order(self, order: Order, fill_price: float, fill_quantity: float):
         """
@@ -321,7 +287,7 @@ class Portfolio:
             "positions": [str(pos) for pos in self.positions.values()],
         }
 
-    def get_portfolio_value(self, timestamp: datetime) -> float:
+    def get_portfolio_value(self, timestamp: datetime, price_array: Union[np.ndarray, pd.Series]) -> float:
         """
         Calculate total portfolio value including cash.
         
@@ -331,5 +297,17 @@ class Portfolio:
         Returns:
             Total portfolio value
         """
-        # TODO: Implement portfolio value calculation using quantity_matrix
-        pass
+        # get last row of quantity matrix
+        quantity_array = (
+            self.quantity_matrix
+            .get_matrix(up_to_timestamp=timestamp)
+            .iloc[-1]
+        )
+
+        # depending on type of price array, calculate dot product
+        if isinstance(price_array, np.ndarray):
+            return np.dot(quantity_array, price_array)
+        elif isinstance(price_array, pd.Series):
+            return quantity_array.dot(price_array)
+        else:
+            raise ValueError("Invalid price array type")

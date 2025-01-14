@@ -135,7 +135,7 @@ class AssetUniverse:
         df_renamed = df.rename(columns=renames)
 
         # Ensure we only keep the columns we need
-        df_renamed = df_renamed[["symbol", "datetime"] + OHLCV_COLS]]
+        df_renamed = df_renamed[["symbol", "datetime"] + OHLCV_COLS]
 
         # Set a multi-index
         df_renamed.set_index(["symbol", "datetime"], inplace=True)
