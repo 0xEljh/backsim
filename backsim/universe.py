@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Union
 import pandas as pd
+import numpy as np
 
 
 @dataclass
@@ -27,9 +28,10 @@ class DataSliceRequest:
     """
     Data slice request parameters.
     """
+
     symbols: List[str]
     fields: List[str]  # e.g. ["open", "high", "low", "close", "volume"]
-    lookback: int      # how many bars to look back
+    lookback: int  # how many bars to look back
     frequency: str
 
 
@@ -77,8 +79,7 @@ class AssetUniverse:
             # Add symbol to the index
             # We'll build a multi-index: (symbol, datetime)
             df_symbol.index = pd.MultiIndex.from_product(
-                [[symbol], df_symbol.index],
-                names=["symbol", "datetime"]
+                [[symbol], df_symbol.index], names=["symbol", "datetime"]
             )
             df_list.append(df_symbol)
 
@@ -89,9 +90,7 @@ class AssetUniverse:
             # If empty, create an empty frame
             df_all = pd.DataFrame(columns=OHLCV_COLS)
             df_all.index = pd.MultiIndex(
-                levels=[[], []],
-                codes=[[], []],
-                names=["symbol", "datetime"]
+                levels=[[], []], codes=[[], []], names=["symbol", "datetime"]
             )
 
         # Sort the index for consistency
@@ -130,7 +129,7 @@ class AssetUniverse:
             high_col: "high",
             low_col: "low",
             close_col: "close",
-            volume_col: "volume"
+            volume_col: "volume",
         }
         df_renamed = df.rename(columns=renames)
 
@@ -166,9 +165,7 @@ class AssetUniverse:
         expected = set(OHLCV_COLS)
         actual = set(self._df.columns)
         if expected != actual:
-            raise ValueError(
-                f"DataFrame must have columns {expected}, got {actual}"
-            )
+            raise ValueError(f"DataFrame must have columns {expected}, got {actual}")
         # Check multi-index
         if not isinstance(self._df.index, pd.MultiIndex):
             raise ValueError("DataFrame index must be a MultiIndex (symbol, datetime).")
@@ -197,8 +194,10 @@ class AssetUniverse:
         Access the underlying multi-index DataFrame directly.
         """
         return self._df
-    
-    def get_price_matrix(self, price_agg_func: Optional[str|callable] = "close") -> pd.DataFrame:
+
+    def get_price_matrix(
+        self, price_agg_func: Optional[str | callable] = "close"
+    ) -> pd.DataFrame:
         """
         Return a price matrix has the form of (symbol, datetime) -> price.
 
@@ -210,16 +209,11 @@ class AssetUniverse:
         """
 
         if callable(price_agg_func):
-            return (
-                self._df
-                .groupby(level="symbol")
-                .agg(price_agg_func)
-                .reset_index()
-            )
+            return self._df.groupby(level="symbol").agg(price_agg_func).reset_index()
 
         if price_agg_func not in OHLCV_COLS:
             raise ValueError(f"Invalid price_agg_func: {price_agg_func}")
-        
+
         return (
             self._df
             # select the price column (open or close)
@@ -228,12 +222,8 @@ class AssetUniverse:
             .reset_index()
         )
 
-        
-
     def get_data_slice(
-        self,
-        slice_request: DataSliceRequest,
-        timestamp: datetime
+        self, slice_request: DataSliceRequest, timestamp: datetime
     ) -> pd.DataFrame:
         """
         Return a data slice for the requested symbols, fields, and lookback.
@@ -271,20 +261,18 @@ class AssetUniverse:
 
             # Reattach symbol to index so we preserve the multi-index shape
             df_sym_up_to_ts.index = pd.MultiIndex.from_arrays(
-                [
-                    [symbol] * len(df_sym_up_to_ts),
-                    df_sym_up_to_ts.index
-                ],
-                names=["symbol", "datetime"]
+                [[symbol] * len(df_sym_up_to_ts), df_sym_up_to_ts.index],
+                names=["symbol", "datetime"],
             )
             frames.append(df_sym_up_to_ts)
 
         if not frames:
-            return pd.DataFrame(columns=OHLCV_COLS, index=pd.MultiIndex(
-                levels=[[], []],
-                codes=[[], []],
-                names=["symbol", "datetime"]
-            ))
+            return pd.DataFrame(
+                columns=OHLCV_COLS,
+                index=pd.MultiIndex(
+                    levels=[[], []], codes=[[], []], names=["symbol", "datetime"]
+                ),
+            )
 
         df_slice = pd.concat(frames)
         df_slice.sort_index(inplace=True)
@@ -296,11 +284,17 @@ class QuantityMatrix:
     Because pandas is slow for single-row updates, we'll only add values when there
     is a change, and use ffill to populate the rest of the matrix when needed.
     This is effectively a "sparse" matrix.
-    
+
+    Key Features:
+    - **Sparse Updates**: Only updates the current row until the timestamp changes, reducing
+      unnecessary operations on the full matrix.
+    - **Forward-Filling**: Automatically fills missing values using forward-fill (`ffill`) to
+      ensure the matrix is complete and consistent.
+
     In normal use, it should be initialized using metadata from AssetUniverse.
 
     """
-    
+
     def __init__(self, symbols: List[str], start_time: datetime, frequency: str = "1d"):
         self.symbols = symbols
         self.symbol_to_idx = {symbol: idx for idx, symbol in enumerate(symbols)}
@@ -308,13 +302,15 @@ class QuantityMatrix:
         self.frequency = frequency
         self._quantity_matrix = pd.DataFrame(
             0.0,  # Initialize with zeros instead of NaN since no position = 0
-            index=pd.date_range(start=start_time, freq=frequency, closed="left"),
-            columns=symbols
+            index=pd.date_range(  # simply a date array of [start_time]
+                start=start_time, freq=frequency, periods=1, inclusive="left"
+            ),
+            columns=symbols,
         )
 
-        self.current_row = {} # internal storage for current row
+        self.current_row = {}  # internal storage for current row
         self.current_time = start_time
-    
+
     def update_quantity(self, symbol: str, timestamp: datetime, quantity: float):
         """Update quantity for a symbol at given timestamp.
         If the timestamp is the same as the current time, update the current row.
@@ -322,19 +318,19 @@ class QuantityMatrix:
         """
         if timestamp == self.current_time:
             self.current_row[symbol] = quantity
-            return current_row
-        
+            return self.current_row
+
         # commit the current row
         if self.current_row:
             self._quantity_matrix.loc[self.current_time] = self.current_row
             self.current_row = {}
-        
+
         # update current time and row
         self.current_time = timestamp
         self.current_row[symbol] = quantity
-        
+
         return self.current_row
-    
+
     @property
     def matrix(self):
         # commit current row and return matrix
@@ -343,26 +339,37 @@ class QuantityMatrix:
             matrix.loc[self.current_time] = self.current_row
         # forward fill the matrix, ensuring also that it has all rows for each timestamp
         return (
-            matrix
-            .ffill()
-            .reindex(pd.date_range(start=self.start_time, freq=self.frequency, closed="left"), method="ffill")
+            matrix.ffill()
+            .reindex(
+                pd.date_range(
+                    start=self.start_time,
+                    end=self.current_time,
+                    freq=self.frequency,
+                    inclusive="left",
+                ),
+                method="ffill",
+            )
             .fillna(0.0)
         )
-    
+
     def get_matrix(self, up_to_timestamp: datetime):
         # similar to matrix property, but may have to either slice or continue forward fill
         if up_to_timestamp < self.current_time:
-            return (
-                self.matrix
-                .loc[:up_to_timestamp]
-            )
-        
+            return self.matrix.loc[:up_to_timestamp]
+
         return (
             self.matrix
             # add new row with nan values
-            .append(pd.DataFrame(np.nan, index=[up_to_timestamp], columns=self.symbols))
+            # .append(pd.DataFrame(np.nan, index=[up_to_timestamp], columns=self.symbols))
             .ffill()
-            .reindex(pd.date_range(start=self.start_time, freq=self.frequency, closed="left"), method="ffill")
+            .reindex(
+                pd.date_range(
+                    start=self.start_time,
+                    end=up_to_timestamp,
+                    freq=self.frequency,
+                    inclusive="left",
+                ),
+                method="ffill",
+            )
             .fillna(0.0)
         )
-            
