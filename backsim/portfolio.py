@@ -71,13 +71,13 @@ class Order:
             logger.warning(
                 "Attempting to get margin of unfilled market order; Margin cannot be defined"
             )
-            raise ValueError("Margin cannot be defined with a reference price.")
+            raise ValueError("Margin cannot be defined without a reference price.")
         return abs(self.quantity * self.limit_price) / self.leverage_ratio
 
     @property
     def is_fully_filled(self):
-        if self.status != OrderStatus.FILLED:
-            return False
+        # if self.status != OrderStatus.FILLED:
+        #     return False
         return self.filled_quantity == self.quantity
 
     def __str__(self):
@@ -246,10 +246,43 @@ class Portfolio:
             )
             self.open_orders.append(order)
 
-    def close_order(self, order: Order):
-        # Move order to filled orders
-        self.open_orders.remove(order)
+    def close_order(self, order: Order, non_existent_order_ok=False):
+        """
+        Closes the order by removing from open_orders (if present) and
+        appending to closed_orders. This is intended for terminal states:
+        FILLED, REJECTED, EXPIRED, CANCELED, etc.
+        """
+        # Defensive remove: only remove if still in open_orders
+        if order not in self.open_orders and not non_existent_order_ok:
+            raise ValueError(
+                f"Tried to close an order ({order}) that does not exist in open_orders({self.open_orders})"
+            )
+        if order in self.open_orders:
+            self.open_orders.remove(order)
         self.closed_orders.append(order)
+        logger.debug(f"Order closed: {order}")
+
+    def update_order(self, order: Order):
+        """
+        Updates existing orders (e.g. change in filled_price)
+        If the order ends up in a terminal status or is fully-filled,
+        move it to closed_orders.
+        """
+        if (
+            order.status
+            in [OrderStatus.REJECTED, OrderStatus.EXPIRED, OrderStatus.FILLED]
+            or order.is_fully_filled  # consider if it should be this or OrderStatus.FILLED
+        ):
+            # Mark the status as FILLED if not already (e.g. a partial fill
+            # that just became complete). Or keep REJECTED/EXPIRED as is.
+            if order.is_fully_filled:
+                order.status = OrderStatus.FILLED
+            self.close_order(order)
+        else:
+            # Otherwise, it is still active (e.g. PARTIALLY_FILLED)
+            # so keep it in open_orders. If we re-sort or
+            # re-store open orders, modify this to accomodate
+            logger.debug(f"Order updated but still open: {order}")
 
     def fill_order(self, order: Order):
         """
@@ -261,7 +294,6 @@ class Portfolio:
             fill_price: Price at which the order was filled
             fill_quantity: Quantity of the order that was filled
         """
-        # TODO: consider refactor if logic proves reusable.
 
         # Update position, if applicable
         realized_pnl = 0.0
@@ -292,7 +324,7 @@ class Portfolio:
         # update cash: deduct fees, determine if this was a reduction in position
         self._cash += realized_pnl - order.fees_incurred
 
-        self.close_order(order)
+        self.update_order(order)
 
         if self.cash < 0:  # TODO: decide if cash or _cash
             raise ValueError("Insufficient cash to continue trading")
