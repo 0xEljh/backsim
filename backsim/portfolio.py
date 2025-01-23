@@ -29,6 +29,9 @@ class OrderStatus(Enum):
     PENDING = "PENDING"
     FILLED = "FILLED"
     CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"  # TODO: handle this case
 
 
 class OrderType(Enum):
@@ -251,6 +254,7 @@ class Portfolio:
     def fill_order(self, order: Order):
         """
         Process a fill for an order.
+        TODO: needs to be updated to handle partial fills.
 
         Args:
             order: Order object to fill
@@ -258,10 +262,6 @@ class Portfolio:
             fill_quantity: Quantity of the order that was filled
         """
         # TODO: consider refactor if logic proves reusable.
-
-        # order.status = OrderStatus.FILLED
-        # order.filled_price = fill_price
-        # order.filled_quantity = fill_quantity
 
         # Update position, if applicable
         realized_pnl = 0.0
@@ -304,22 +304,6 @@ class Portfolio:
 
     #     Args:
     #         current_prices: Dictionary mapping symbols to current prices
-
-    #     Returns:
-    #         Dictionary containing margin information for each position
-    #     """
-    #     margin_status = {}
-    #     for symbol, position in self.positions.items():
-    #         if symbol in current_prices:
-    #             current_price = current_prices[symbol]
-    #             margin_status[symbol] = {
-    #                 "initial_margin": position.initial_margin,
-    #                 "maintenance_margin": position.initial_margin * self.maintenance_margin_ratio,
-    #                 "unrealized_pnl": position.get_unrealized_pnl(current_price),
-    #                 "margin_breach": position.check_margin_breach(current_price, self.maintenance_margin_ratio),
-    #                 "leverage": position.leverage
-    #             }
-    #     return margin_status
 
     def get_snapshot(self, timestamp: datetime) -> Dict:
         """
@@ -387,3 +371,17 @@ class Portfolio:
             )
 
         return portfolio_value
+
+    def cleanup_orders(self):
+        """
+        Remove any orders that have been filled, expired, cancelled, or rejected
+        """
+        orders_to_remove = [
+            order for order in self.open_orders if order.status != OrderStatus.PENDING
+        ]
+
+        logger.debug(f"Orders to remove due to cleanup: {len(orders_to_remove)}")
+
+        for order in orders_to_remove:
+            self.open_orders.remove(order)
+            self.closed_orders.append(order)

@@ -13,18 +13,6 @@ import numpy as np
 OHLCV_COLS = ["open", "high", "low", "close", "volume"]
 
 
-@dataclass
-class DataSliceRequest:
-    """
-    Data slice request parameters.
-    """
-
-    symbols: List[str]
-    fields: List[str]  # e.g. ["open", "high", "low", "close", "volume"]
-    lookback: int  # how many bars to look back
-    frequency: str
-
-
 class AssetUniverse:
     """
     Stores all asset data in a single multi-index DataFrame:
@@ -48,7 +36,6 @@ class AssetUniverse:
         if require_ohlcv:
             self._validate_df()
 
-
     @classmethod
     def from_dict_of_dataframes(cls, data: Dict[str, pd.DataFrame]) -> AssetUniverse:
         """
@@ -67,7 +54,7 @@ class AssetUniverse:
             # Skip empty DataFrames
             if df_symbol.empty:
                 continue
-                
+
             # Ensure columns match expected
             # (You can handle missing columns or rename as needed)
             df_symbol = df_symbol.copy()
@@ -162,7 +149,7 @@ class AssetUniverse:
         required = set(["open", "high", "low", "close", "volume"])
         actual = set(self._df.columns)
         missing = required - actual
-        if missing: # extra columns are ok
+        if missing:  # extra columns are ok
             raise ValueError(f"Missing required columns: {missing}")
         # Check multi-index
         if not isinstance(self._df.index, pd.MultiIndex):
@@ -220,7 +207,6 @@ class AssetUniverse:
             .reset_index()
         )
 
-
     def slice_data(
         self,
         symbols=None,
@@ -228,7 +214,7 @@ class AssetUniverse:
         start=None,
         end=None,
         lookback=None,
-        resample_freq=None
+        resample_freq=None,
     ) -> pd.DataFrame:
         def _filter_symbols(df):
             if symbols is None:
@@ -262,16 +248,13 @@ class AssetUniverse:
             if not resample_freq:
                 return df
             return (
-                df
-                .groupby(level='symbol', group_keys=False)
-                .resample(resample_freq, level='datetime')
+                df.groupby(level="symbol", group_keys=False)
+                .resample(resample_freq, level="datetime")
                 .last()
             )
 
-
         return (
-            self._df
-            .pipe(_filter_symbols)
+            self._df.pipe(_filter_symbols)
             .pipe(_filter_end)
             .pipe(_apply_lookback)
             .pipe(_filter_start)
@@ -280,13 +263,11 @@ class AssetUniverse:
             .sort_index()
         )
 
-
     def append_data(self, new_data: pd.DataFrame) -> None:
         # Expects multi-index with (symbol, datetime).
         # We could validate or just trust the user.
         self._df = pd.concat([self._df, new_data], verify_integrity=False)
         self._df.sort_index(inplace=True)
-
 
 
 class QuantityMatrix:
