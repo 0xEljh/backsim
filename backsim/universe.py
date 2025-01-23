@@ -10,16 +10,6 @@ import pandas as pd
 import numpy as np
 
 
-@dataclass
-class DataSliceRequest:
-    """Data slice request parameters."""
-
-    symbols: List[str]
-    fields: List[str]
-    lookback: int
-    frequency: str
-
-
 OHLCV_COLS = ["open", "high", "low", "close", "volume"]
 
 
@@ -45,16 +35,19 @@ class AssetUniverse:
     Provides multiple classmethods for easy instantiation from user data.
     """
 
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame, require_ohlcv=True):
         """
         Initialize with a multi-index DataFrame. Typically, you won't call this directly;
         instead, use a classmethod (e.g. from_dict_of_dataframes, from_flat_df, etc.).
 
         Args:
             df: DataFrame with a MultiIndex (symbol, datetime) and columns = OHLCV_COLS
+            require_ohlcv: If True, raise an error if the DataFrame does not have the expected columns.
         """
         self._df = df
-        self._validate_df()
+        if require_ohlcv:
+            self._validate_df()
+
 
     @classmethod
     def from_dict_of_dataframes(cls, data: Dict[str, pd.DataFrame]) -> AssetUniverse:
@@ -71,6 +64,10 @@ class AssetUniverse:
         # Build a list of (symbol, sub_df) pairs, converting each to multi-index
         df_list = []
         for symbol, df_symbol in data.items():
+            # Skip empty DataFrames
+            if df_symbol.empty:
+                continue
+                
             # Ensure columns match expected
             # (You can handle missing columns or rename as needed)
             df_symbol = df_symbol.copy()
@@ -162,10 +159,11 @@ class AssetUniverse:
         and that the index is a MultiIndex of (symbol, datetime).
         """
         # Check columns
-        expected = set(OHLCV_COLS)
+        required = set(["open", "high", "low", "close", "volume"])
         actual = set(self._df.columns)
-        if expected != actual:
-            raise ValueError(f"DataFrame must have columns {expected}, got {actual}")
+        missing = required - actual
+        if missing: # extra columns are ok
+            raise ValueError(f"Missing required columns: {missing}")
         # Check multi-index
         if not isinstance(self._df.index, pd.MultiIndex):
             raise ValueError("DataFrame index must be a MultiIndex (symbol, datetime).")
@@ -222,61 +220,73 @@ class AssetUniverse:
             .reset_index()
         )
 
-    def get_data_slice(
-        self, slice_request: DataSliceRequest, timestamp: datetime
+
+    def slice_data(
+        self,
+        symbols=None,
+        fields=None,
+        start=None,
+        end=None,
+        lookback=None,
+        resample_freq=None
     ) -> pd.DataFrame:
-        """
-        Return a data slice for the requested symbols, fields, and lookback.
+        def _filter_symbols(df):
+            if symbols is None:
+                return df
+            # return df.loc[pd.IndexSlice[symbols, :], :]
+            return df.query("symbol in @symbols")
 
-        We'll return the slice as a DataFrame with the multi-index intact,
-        but filtered to the symbols, fields, and the lookback bars up to `timestamp`.
+        def _filter_end(df):
+            if end is None:
+                return df
+            return df.loc[pd.IndexSlice[:, :end], :]
 
-        Args:
-            slice_request: DataSliceRequest
-            timestamp: Current simulation timestamp
+        def _apply_lookback(df):
+            if lookback is None:
+                return df
+            return df.groupby(level="symbol").tail(lookback)
 
-        Returns:
-            pd.DataFrame (multi-index) containing the requested slice
-        """
-        # Step 1: Filter the universe to the requested symbols
-        idx = self._df.index.get_level_values("symbol").isin(slice_request.symbols)
-        df_filtered_symbols = self._df[idx]
+        def _filter_start(df):
+            if start is None:
+                return df
+            slice_end = end if end else None
+            return df.loc[pd.IndexSlice[:, start:slice_end], :]
 
-        # Step 2: Within each symbol, filter to rows up to `timestamp`
-        # We can group by symbol and then slice
-        frames = []
-        for symbol in slice_request.symbols:
-            # Try to slice for this symbol
-            try:
-                df_sym = df_filtered_symbols.loc[symbol]
-            except KeyError:
-                continue
+        def _select_fields(df):
+            if fields is None:
+                return df
+            valid_fields = df.columns.intersection(fields, sort=False)
+            return df[valid_fields]
 
-            df_sym_up_to_ts = df_sym.loc[:timestamp]
-            if slice_request.lookback > 0:
-                df_sym_up_to_ts = df_sym_up_to_ts.iloc[-slice_request.lookback :]
-
-            # Now only keep the requested fields
-            df_sym_up_to_ts = df_sym_up_to_ts[slice_request.fields]
-
-            # Reattach symbol to index so we preserve the multi-index shape
-            df_sym_up_to_ts.index = pd.MultiIndex.from_arrays(
-                [[symbol] * len(df_sym_up_to_ts), df_sym_up_to_ts.index],
-                names=["symbol", "datetime"],
-            )
-            frames.append(df_sym_up_to_ts)
-
-        if not frames:
-            return pd.DataFrame(
-                columns=OHLCV_COLS,
-                index=pd.MultiIndex(
-                    levels=[[], []], codes=[[], []], names=["symbol", "datetime"]
-                ),
+        def _resample(df):
+            if not resample_freq:
+                return df
+            return (
+                df
+                .groupby(level='symbol', group_keys=False)
+                .resample(resample_freq, level='datetime')
+                .last()
             )
 
-        df_slice = pd.concat(frames)
-        df_slice.sort_index(inplace=True)
-        return df_slice
+
+        return (
+            self._df
+            .pipe(_filter_symbols)
+            .pipe(_filter_end)
+            .pipe(_apply_lookback)
+            .pipe(_filter_start)
+            .pipe(_select_fields)
+            .pipe(_resample)
+            .sort_index()
+        )
+
+
+    def append_data(self, new_data: pd.DataFrame) -> None:
+        # Expects multi-index with (symbol, datetime).
+        # We could validate or just trust the user.
+        self._df = pd.concat([self._df, new_data], verify_integrity=False)
+        self._df.sort_index(inplace=True)
+
 
 
 class QuantityMatrix:
