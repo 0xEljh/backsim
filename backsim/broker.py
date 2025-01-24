@@ -136,9 +136,80 @@ class NaiveCloseFillModel(FillModel):
         if df_slice.empty:
             return FillResult(price=float("nan"), quantity=0.0)
 
-        return FillResult(
-            price=df_slice["close"].iloc[-1].squeeze(), quantity=order.quantity
+        price = price = df_slice["close"].iloc[-1].squeeze()
+
+        # only proceed further if limit order:
+        if order.order_type == OrderType.MARKET:
+            return FillResult(price, order.quantity)
+
+        # 1) Check if limit is triggered
+        triggered = False
+        if order.side == OrderSide.BUY and price <= order.limit_price:
+            triggered = True
+        elif order.side == OrderSide.SELL and price >= order.limit_price:
+            triggered = True
+
+        if not triggered:
+            return FillResult(price=0.0, quantity=0.0)  # no fill
+
+        return FillResult(price, order.quantity)
+
+
+class VolumeAwareLimitFillModel(FillModel):
+    """
+    Example fill model:
+    - Checks if the bar's high/low crosses the limit.
+    - Uses volume to determine partial or full fill.
+    - Potentially includes slippage logic.
+    """
+
+    def get_fill(
+        self, order: Order, timestamp: datetime, universe: AssetUniverse
+    ) -> FillResult:
+        bar = universe.slice_data(
+            symbols=[order.symbol],
+            end=timestamp,
+            lookback=1,
+            fields=["open", "high", "low", "close", "volume"],
         )
+        if bar.empty:
+            return FillResult(price=float("nan"), quantity=0.0)
+
+        # Extract row data
+        row = bar.iloc[-1]
+        bar_open = row["open"].squeeze()
+        bar_high = row["high"].squeeze()
+        bar_low = row["low"].squeeze()
+        bar_volume = row["volume"].squeeze()
+
+        limit_price = order.limit_price
+        qty_left = order.quantity - order.filled_quantity
+
+        # 1) Check if limit is triggered
+        triggered = False
+        if order.side == OrderSide.BUY and bar_low <= limit_price:
+            triggered = True
+        elif order.side == OrderSide.SELL and bar_high >= limit_price:
+            triggered = True
+
+        if not triggered:
+            return FillResult(price=0.0, quantity=0.0)  # no fill
+
+        # # 2) Decide fill price
+        # # Suppose we fill at whichever is better: bar_open or the limit price
+        # if order.side == OrderSide.BUY:
+        #     fill_price = min(bar_open, limit_price, bar_low)
+        # else:
+        #     fill_price = max(bar_open, limit_price, bar_high)
+
+        # fill at the limit for most simplistic approximation (else assumption of frequency is too high)
+
+        # 3) Partial fill based on bar volume, if needed
+        # For simplicity, assume if the bar volume < order qty, we partially fill
+        # Or do more advanced volume fraction logic
+        fillable_qty = min(qty_left, bar_volume)  # naive approach
+
+        return FillResult(price=limit_price, quantity=fillable_qty)
 
 
 class PriceMatrixView:
@@ -191,6 +262,7 @@ class Broker:
         margin_model: Optional[MarginModel] = None,
         fill_delay: timedelta = timedelta(0),
         allow_partial_margin_fills: bool = False,
+        fallback_price_field: str = "close",  # or "open", etc
     ):
         """
         Initialize broker.
@@ -208,6 +280,7 @@ class Broker:
         self.margin_model = margin_model
         self.fill_delay = fill_delay
         self.allow_partial_margin_fills = allow_partial_margin_fills
+        self.fallback_price_field = fallback_price_field
 
     def process_fills(self, portfolio: Portfolio, timestamp: datetime):
         """
@@ -242,48 +315,33 @@ class Broker:
                 portfolio.close_order(order)
                 continue
 
-            # First determine execution price and potential fill quantity
+            # If user has provided a FillModel, we delegate to it
             if self.fill_model:
                 fill_result = self.fill_model(order, timestamp, self.asset_universe)
                 fill_price = fill_result.price
                 fill_quantity = fill_result.quantity
             else:
-                # If no fill model, do naive fill at close price
-                fill_price = self._get_close_price(order.symbol, timestamp)
-                fill_quantity = (
-                    order.quantity - order.filled_quantity
-                )  # Remaining quantity
+                # No custom fill model => fallback
+                fill_price, fill_quantity = self._fallback_fill_logic(order, timestamp)
 
-            if order.order_type == OrderType.LIMIT:
-                # Universal rule based on order side
-                price_valid = (
-                    order.side == OrderSide.BUY and fill_price <= order.limit_price
-                ) or (order.side == OrderSide.SELL and fill_price >= order.limit_price)
-
-                if not price_valid:
-                    continue  # Skip fill; wait for price criteria
+            # If the fill model said 0 quantity filled, skip
+            if fill_quantity <= 0:
+                continue
 
             # Check margin requirements
             if self.margin_model is not None:
                 if not self.margin_model.can_fill_order(portfolio, order, fill_result):
                     if not self.allow_partial_margin_fills:
                         order.status = OrderStatus.REJECTED
-
                         portfolio.close_order(order)
-                        continue
-                    # Compute partial fill quantity
-                    fill_result.quantity = self.margin_model.compute_fillable_quantity(
-                        portfolio, order, fill_result
-                    )
-                    if fill_result.quantity <= EPSILON:
-                        order.status = OrderStatus.REJECTED
+                    continue
 
-                        portfolio.close_order(order)
-                        continue
-                fillable_quantity = fill_quantity
+                # Update fill quantity based on margin constraints
+                fillable_quantity = self.margin_model.compute_fillable_quantity(
+                    portfolio, order, fill_result
+                )
             else:
-                # if no margin model, assume full quantity is fillable
-                fillable_quantity = fill_quantity
+                fillable_quantity = fill_quantity  # no check
 
             # Determine final fill quantity
             final_quantity = min(
@@ -292,24 +350,42 @@ class Broker:
                 order.quantity - order.filled_quantity,  # Remaining quantity
             )
 
-            # Update order state
-            if (final_quantity * fill_price) > EPSILON:
-                order.filled_price = fill_price
-                order.filled_quantity += final_quantity
-                order.status = (
-                    OrderStatus.PARTIALLY_FILLED
-                    if order.filled_quantity < order.quantity
-                    else OrderStatus.FILLED
-                )
-                portfolio.fill_order(order)
+            # Process the fill
+            try:
+                if final_quantity > 0:
+                    order.add_fill(
+                        quantity=final_quantity, price=fill_price, timestamp=timestamp
+                    )
+                    portfolio.fill_order(order)
 
-    def _get_close_prices(self, symbols: list[str], timestamp: datetime) -> float:
+            except ValueError as e:
+                # Handle insufficient cash
+                order.status = OrderStatus.REJECTED
+
+                portfolio.close_order(order)
+                continue
+
+    def _fallback_fill_logic(self, order: Order, timestamp: datetime):
+        fill_quantity = order.quantity - order.filled_quantity
+
+        fill_price = self._get_price(order.symbol, timestamp)
+
+        # If the order is a limit, do the same naive limit check
+        if order.order_type == OrderType.LIMIT:
+            if order.side == OrderSide.BUY and fill_price > order.limit_price:
+                return (0.0, 0.0)  # skip
+            if order.side == OrderSide.SELL and fill_price < order.limit_price:
+                return (0.0, 0.0)  # skip
+
+        return (fill_price, fill_quantity)
+
+    def _get_prices(self, symbols: list[str], timestamp: datetime) -> float:
         df_slice = self.asset_universe.slice_data(
             symbols=symbols, end=timestamp, lookback=1, fields=["close"]
         )
-        return df_slice["close"].iloc[-1].squeeze()
+        return df_slice[self.fallback_price_field].iloc[-1].squeeze()
 
-    def _get_close_price(self, symbol: str, timestamp: datetime) -> float:
+    def _get_price(self, symbol: str, timestamp: datetime) -> float:
         """
         Simple fallback if no fill_model is specified:
         use the last known close price from the AssetUniverse.
@@ -321,4 +397,4 @@ class Broker:
             raise ValueError(
                 f"Could not retrieve last close price of {symbol} at {timestamp}"
             )
-        return df_slice["close"].iloc[-1].squeeze()
+        return df_slice[self.fallback_price_field].iloc[-1].squeeze()

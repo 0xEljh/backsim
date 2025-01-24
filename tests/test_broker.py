@@ -11,6 +11,7 @@ from backsim.broker import (
     FillResult,
     SimpleCashMargin,
     NaiveCloseFillModel,
+    VolumeAwareLimitFillModel,
 )
 from backsim.portfolio import Portfolio, Order, OrderStatus, OrderType, OrderSide
 from backsim.universe import AssetUniverse, QuantityMatrix
@@ -39,6 +40,16 @@ def sample_universe_data():
                 "low": [190, 192, 194, 196, 198],
                 "close": [204, 206, 208, 210, 212],
                 "volume": [2000, 2200, 2400, 2600, 2800],
+            },
+            index=dates,
+        ),
+        "SMOL": pd.DataFrame(
+            {
+                "open": [200, 202, 204, 206, 208],
+                "high": [210, 212, 214, 216, 218],
+                "low": [190, 192, 194, 196, 198],
+                "close": [204, 206, 208, 210, 212],
+                "volume": [20, 22, 24, 26, 28],
             },
             index=dates,
         ),
@@ -347,3 +358,94 @@ def test_custom_fill_model(sample_universe_data, portfolio, start_time):
     broker.process_fills(portfolio, start_time)
 
     assert portfolio.closed_orders[0].filled_price == expected_fill_price
+
+
+def test_volume_aware_limit_fill_model(sample_universe_data, portfolio, start_time):
+    """Test VolumeAwareLimitFillModel's fill behavior."""
+    broker = Broker(
+        asset_universe=sample_universe_data,
+        fill_model=VolumeAwareLimitFillModel(),
+        margin_model=SimpleCashMargin(),
+    )
+
+    # Test 1: Buy limit order - should fill when low price <= limit_price
+    buy_order_dict = {
+        "symbol": "AAPL",
+        "quantity": 5,  # Requires ~$490 margin at $98/share
+        "order_type": OrderType.LIMIT,
+        "side": OrderSide.BUY,
+        "timestamp": start_time,
+        "limit_price": 98.0,  # Between low (95) and high (105) of first bar
+    }
+    portfolio.add_orders([buy_order_dict])
+    broker.process_fills(portfolio, start_time)
+
+    # Verify fill
+    assert len(portfolio.closed_orders) == 1
+    filled_buy = portfolio.closed_orders[0]
+    assert filled_buy.status == OrderStatus.FILLED
+    assert filled_buy.filled_price == 98.0  # Should fill at limit
+    assert filled_buy.filled_quantity == 5  # Should fill fully as quantity < volume
+
+    # Test 2: Sell limit order - should fill when high price >= limit_price
+    sell_order_dict = {
+        "symbol": "SMOL",  # Using SMOL to test low volume behavior
+        "quantity": 30,  # More than bar volume (20) to test partial fills
+        "order_type": OrderType.LIMIT,
+        "side": OrderSide.SELL,
+        "timestamp": start_time,
+        "limit_price": 205.0,  # Between low (190) and high (210) of first bar
+    }
+    portfolio.add_orders([sell_order_dict])
+    broker.process_fills(portfolio, start_time)
+
+    # Verify partial fill
+    assert len(portfolio.closed_orders) == 1  # a partial fill order is not closed
+    partial_filled_sell = portfolio.open_orders[1]
+    assert partial_filled_sell.status == OrderStatus.PARTIALLY_FILLED
+    assert partial_filled_sell.filled_price == 205.0  # Should fill at limit
+    assert partial_filled_sell.filled_quantity == 20  # Limited by bar volume
+
+    # Test 3: Buy limit order - should not fill when low price > limit_price
+    no_fill_order_dict = {
+        "symbol": "AAPL",
+        "quantity": 10,
+        "order_type": OrderType.LIMIT,
+        "side": OrderSide.BUY,
+        "timestamp": start_time,
+        "limit_price": 94.0,  # Below low price (95)
+    }
+    portfolio.add_orders([no_fill_order_dict])
+    broker.process_fills(portfolio, start_time)
+
+    # Verify no fill
+    assert len(portfolio.open_orders) == 1
+    assert portfolio.open_orders[0].status == OrderStatus.PENDING
+
+
+def test_volume_aware_limit_fill_model_empty_bar(
+    sample_universe_data, portfolio, start_time
+):
+    """Test VolumeAwareLimitFillModel's behavior with empty bar data."""
+    broker = Broker(
+        asset_universe=sample_universe_data,
+        fill_model=VolumeAwareLimitFillModel(),
+        margin_model=SimpleCashMargin(),
+    )
+
+    # Try to fill at a timestamp with no data
+    future_time = start_time + timedelta(days=10)
+    order_dict = {
+        "symbol": "SMOL",
+        "quantity": 100,
+        "order_type": OrderType.LIMIT,
+        "side": OrderSide.BUY,
+        "timestamp": future_time,
+        "limit_price": 100.0,
+    }
+    portfolio.add_orders([order_dict])
+    broker.process_fills(portfolio, future_time)
+
+    # Should not fill due to empty bar
+    assert len(portfolio.open_orders) == 1
+    assert portfolio.open_orders[0].status == OrderStatus.PENDING

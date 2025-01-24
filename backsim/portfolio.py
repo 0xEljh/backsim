@@ -4,7 +4,7 @@ Portfolio implementation for tracking positions and orders.
 
 from datetime import datetime
 from typing import Dict, List, Optional, Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import pandas as pd
 import numpy as np
@@ -40,6 +40,15 @@ class OrderType(Enum):
 
 
 @dataclass
+class Fill:
+    """Represents a single fill event for an order."""
+
+    quantity: float
+    price: float
+    timestamp: datetime
+
+
+@dataclass
 class Order:
     """Represents a trading order."""
 
@@ -52,9 +61,32 @@ class Order:
     expiry: Optional[datetime] = None
     status: OrderStatus = OrderStatus.PENDING
     leverage_ratio: float = 1.0
-    filled_price: Optional[float] = None
+    filled_price: Optional[float] = None  # average fill price
     filled_quantity: float = 0.0
     fees_incurred: float = 0.0
+    fills: List[Fill] = field(default_factory=list)
+
+    def add_fill(self, quantity: float, price: float, timestamp: datetime):
+        """Add a new fill and update average price."""
+        self.fills.append(Fill(quantity, price, timestamp))
+        self.filled_quantity += quantity
+
+        # Update average price
+        total_value = sum(f.quantity * f.price for f in self.fills)
+        self.filled_price = (
+            total_value / self.filled_quantity if self.filled_quantity > 0 else 0.0
+        )
+
+        # update status if now fully filled
+        if self.is_fully_filled:
+            self.status = OrderStatus.FILLED
+        else:
+            self.status = OrderStatus.PARTIALLY_FILLED
+
+    @property
+    def remaining_quantity(self) -> float:
+        """Get remaining quantity to be filled."""
+        return self.quantity - self.filled_quantity
 
     def is_expired(self, current_time: datetime) -> bool:
         """Check if order has expired."""
@@ -65,7 +97,7 @@ class Order:
         # Calculate margin for the order
         # use preferentially filled price
         if self.filled_price is not None:
-            return abs(self.quantity * self.filled_price) / self.leverage_ratio
+            return abs(self.filled_quantity * self.filled_price) / self.leverage_ratio
         if self.limit_price is None:
             # neither has been provided yet; checking margin of an unfilled market order
             logger.warning(
@@ -91,13 +123,96 @@ class Order:
 
 @dataclass
 class Position:
-    """Represents a position in a single asset."""
+    """Represents a trading position."""
 
     symbol: str
     quantity: float
     cost_basis: float
     initial_margin: float = 0.0
-    # maintenance margin is a calculated property based on initial margin, for flexibility
+
+    def update_from_fill(self, fill: Fill, order: Order) -> float:
+        """Update position based on a filled order. Returns PnL if any from the occurence of the order"""
+        if order.filled_price is None or order.filled_quantity is None:
+            raise ValueError("Order must be filled before updating position")
+
+        fill_quantity = fill.quantity * (
+            1 if order.side in (OrderSide.BUY, "BUY") else -1
+        )
+        old_quantity = self.quantity
+        new_quantity = self.quantity + fill_quantity
+
+        realized_pnl = 0.0
+
+        if self.is_zero:
+            # opening new position
+            self.cost_basis = order.filled_price
+            self.initial_margin = order.margin
+            self.quantity = new_quantity
+            return realized_pnl
+
+        if new_quantity == 0:
+            # closing position
+            realized_pnl = self.get_unrealized_pnl(fill.price)
+            self.quantity = new_quantity
+            return realized_pnl
+
+        # Update cost basis and margin for 3 scenarios
+        # 1. increasing position
+        # 2. reducing position
+        # 3. flipping position
+
+        if (old_quantity > 0 and new_quantity < 0) or (
+            old_quantity < 0 and new_quantity > 0
+        ):
+            # Flipping position
+            realized_pnl = (fill.price - self.cost_basis) * old_quantity
+            # Start the new position with remaining quantity
+            self.quantity = new_quantity
+            self.cost_basis = fill.price
+            self.initial_margin = abs(new_quantity * fill.price) / order.leverage_ratio
+            return realized_pnl
+
+        if abs(new_quantity) > abs(old_quantity):
+            # Increasing position
+            self.cost_basis = (  # careful of negative qty
+                self.cost_basis * abs(old_quantity) + fill.price * abs(fill.quantity)
+            ) / abs(new_quantity)
+
+            self.quantity = new_quantity
+            # add margin of new fill
+            self.initial_margin += (
+                fill.price * abs(fill.quantity) / order.leverage_ratio
+            )
+            return realized_pnl
+
+        if abs(new_quantity) < abs(old_quantity):
+            # Reducing position
+            closed_quantity = old_quantity - new_quantity
+            realized_pnl = (fill.price - self.cost_basis) * closed_quantity
+            new_margin = (
+                abs(new_quantity * self.cost_basis) / self.leverage
+            )  # proportinal reduction in margin requirement
+            self.quantity = new_quantity
+            self.initial_margin = new_margin
+            return realized_pnl
+
+    def update_from_order(self, order: Order) -> float:
+        if not order.fills:
+            return 0.0
+
+        # Use the latest fill
+        latest_fill = order.fills[-1]
+        return self.update_from_fill(latest_fill, order)
+
+    @property
+    def value(self) -> float:
+        """Current position value."""
+        return abs(self.quantity * self.cost_basis)
+
+    @property
+    def is_zero(self) -> bool:
+        """Check if position is effectively zero."""
+        return abs(self.quantity) < 1e-10
 
     @property
     def side(self):
@@ -124,73 +239,6 @@ class Position:
     def get_unrealized_pnl(self, current_price: float) -> float:
         """Calculate unrealized P&L for the position."""
         return (current_price - self.cost_basis) * self.quantity
-
-    def update_from_order(self, order: Order) -> float:
-        """Update position based on a filled order. Returns PnL if any from the occurence of the order"""
-        if order.filled_price is None or order.filled_quantity is None:
-            raise ValueError("Order must be filled before updating position")
-
-        order_quantity = order.quantity * (
-            1 if order.side in (OrderSide.BUY, "BUY") else -1
-        )
-        old_quantity = self.quantity
-        new_quantity = self.quantity + order_quantity
-
-        realized_pnl = 0.0
-
-        if self.is_zero:
-            # opening new position
-            self.cost_basis = order.filled_price
-            self.initial_margin = order.margin
-            self.quantity = new_quantity
-            return realized_pnl
-
-        if new_quantity == 0:
-            # closing position
-            realized_pnl = self.get_unrealized_pnl(order.filled_price)
-            self.quantity = new_quantity
-            return realized_pnl
-
-        # Update cost basis and margin for 3 scenarios
-        # 1. increasing position
-        # 2. reducing position
-        # 3. flipping position
-
-        if (old_quantity > 0 and new_quantity < 0) or (
-            old_quantity < 0 and new_quantity > 0
-        ):
-            # Flipping position
-            realized_pnl = (order.filled_price - self.cost_basis) * old_quantity
-            # Start the new position with remaining quantity
-            self.quantity = new_quantity
-            self.cost_basis = order.filled_price
-            self.initial_margin = (
-                abs(new_quantity * order.filled_price) / order.leverage_ratio
-            )
-            return realized_pnl
-
-        if abs(new_quantity) > abs(old_quantity):
-            # Increasing position
-            self.cost_basis = (  # careful of negative qty
-                self.cost_basis * abs(old_quantity)
-                + order.filled_price * abs(order_quantity)
-            ) / abs(new_quantity)
-
-            self.quantity = new_quantity
-            # add margin of new order
-            self.initial_margin += order.margin
-            return realized_pnl
-
-        if abs(new_quantity) < abs(old_quantity):
-            # Reducing position
-            closed_quantity = old_quantity - new_quantity
-            realized_pnl = (order.filled_price - self.cost_basis) * closed_quantity
-            new_margin = (
-                abs(new_quantity * self.cost_basis) / self.leverage
-            )  # proportinal reduction in margin requirement
-            self.quantity = new_quantity
-            self.initial_margin = new_margin
-            return realized_pnl
 
 
 class Portfolio:
@@ -333,12 +381,9 @@ class Portfolio:
     def fill_order(self, order: Order):
         """
         Process a fill for an order.
-        TODO: needs to be updated to handle partial fills.
 
         Args:
             order: Order object to fill
-            fill_price: Price at which the order was filled
-            fill_quantity: Quantity of the order that was filled
         """
 
         # Update position, if applicable
@@ -357,7 +402,8 @@ class Portfolio:
             self.positions[order.symbol] = Position(
                 symbol=order.symbol,
                 quantity=(
-                    order.quantity * (1 if order.side in (OrderSide.BUY, "BUY") else -1)
+                    order.filled_quantity
+                    * (1 if order.side in (OrderSide.BUY, "BUY") else -1)
                 ),
                 cost_basis=order.filled_price,
                 initial_margin=order.margin,

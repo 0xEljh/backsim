@@ -101,13 +101,13 @@ def test_fill_buy_order(
             "side": "BUY",
             "timestamp": start_time,
             "order_type": "MARKET",
-            "filled_price": fill_price,
-            "filled_quantity": expected_quantity,
         }
     ]
     portfolio.add_orders(orders)
     order = portfolio.open_orders[0]
 
+    # Add fill
+    order.add_fill(quantity=expected_quantity, price=fill_price, timestamp=start_time)
     portfolio.fill_order(order)
 
     assert "AAPL" in portfolio.positions
@@ -132,13 +132,12 @@ def test_fill_sell_order_after_long(portfolio, start_time):
                 "side": "BUY",
                 "timestamp": start_time,
                 "order_type": "MARKET",
-                "filled_price": buy_price,
-                "filled_quantity": buy_qty,
-                "status": OrderStatus.FILLED,
             }
         ]
     )
-    portfolio.fill_order(portfolio.open_orders[0])
+    buy_order = portfolio.open_orders[0]
+    buy_order.add_fill(quantity=buy_qty, price=buy_price, timestamp=start_time)
+    portfolio.fill_order(buy_order)
     initial_cash = portfolio._cash  # cash, without factoring in margin
 
     # Sell half the position
@@ -152,13 +151,12 @@ def test_fill_sell_order_after_long(portfolio, start_time):
                 "side": "SELL",
                 "timestamp": start_time,
                 "order_type": "MARKET",
-                "filled_price": sell_price,
-                "filled_quantity": sell_qty,
-                "status": OrderStatus.FILLED,
             }
         ]
     )
-    portfolio.fill_order(portfolio.open_orders[0])
+    sell_order = portfolio.open_orders[0]
+    sell_order.add_fill(quantity=sell_qty, price=sell_price, timestamp=start_time)
+    portfolio.fill_order(sell_order)
 
     position = portfolio.positions["AAPL"]
     assert position.quantity == buy_qty - sell_qty
@@ -187,12 +185,12 @@ def test_portfolio_value_calculation(portfolio, start_time, symbols):
                 "side": "BUY",
                 "timestamp": start_time,
                 "order_type": "MARKET",
-                "filled_price": buy_price,
-                "filled_quantity": buy_qty,
             }
         ]
     )
-    portfolio.fill_order(portfolio.open_orders[0])
+    buy_order = portfolio.open_orders[0]
+    buy_order.add_fill(quantity=buy_qty, price=buy_price, timestamp=start_time)
+    portfolio.fill_order(buy_order)
 
     # Test with price increase
     current_prices = pd.Series([160.0, 0.0], index=symbols)
@@ -214,69 +212,197 @@ def test_negative_cash_handling(portfolio, start_time):
             "side": "BUY",
             "timestamp": start_time,
             "order_type": "MARKET",
-            "filled_price": 100.0,  # High enough to make cash negative
-            "filled_quantity": 1000,
         }
     ]
     portfolio.add_orders(orders)
+    order = portfolio.open_orders[0]
+    order.add_fill(quantity=1000, price=100.0, timestamp=start_time)
 
     with pytest.raises(ValueError, match="Insufficient cash to continue trading"):
-        portfolio.fill_order(portfolio.open_orders[0])
+        portfolio.fill_order(order)
 
 
 @pytest.mark.parametrize(
     "initial_position,flip_order,expected_quantity",
     [
         # Long to Short
-        ((100, 15.0, "BUY"), (200, 16.0, "SELL"), -100),
+        (
+            {"quantity": 10, "side": "BUY", "price": 100.0},
+            {"quantity": 15, "side": "SELL", "price": 110.0},
+            -5,
+        ),
         # Short to Long
-        ((100, 15.0, "SELL"), (200, 14.0, "BUY"), 100),
+        (
+            {"quantity": 10, "side": "SELL", "price": 100.0},
+            {"quantity": 15, "side": "BUY", "price": 90.0},
+            5,
+        ),
     ],
 )
 def test_position_flipping(
     portfolio, start_time, initial_position, flip_order, expected_quantity
 ):
     """Test flipping positions from long to short and vice versa."""
-    init_qty, init_price, init_side = initial_position
-    flip_qty, flip_price, flip_side = flip_order
-
-    # Create initial position
+    # Establish initial position
     portfolio.add_orders(
         [
             {
                 "symbol": "AAPL",
-                "quantity": init_qty,
-                "side": init_side,
+                "quantity": initial_position["quantity"],
+                "side": initial_position["side"],
                 "timestamp": start_time,
                 "order_type": "MARKET",
-                "filled_price": init_price,
-                "filled_quantity": init_qty,
             }
         ]
     )
-    portfolio.fill_order(portfolio.open_orders[0])
+    order = portfolio.open_orders[0]
+    order.add_fill(
+        quantity=initial_position["quantity"],
+        price=initial_position["price"],
+        timestamp=start_time,
+    )
+    portfolio.fill_order(order)
 
-    position = portfolio.positions["AAPL"]
-
-    assert position.quantity == init_qty * (1 if init_side == "BUY" else -1)
-    assert position.cost_basis == init_price
-
-    # Flip position
+    # Flip the position
     portfolio.add_orders(
         [
             {
                 "symbol": "AAPL",
-                "quantity": flip_qty,
-                "side": flip_side,
+                "quantity": flip_order["quantity"],
+                "side": flip_order["side"],
                 "timestamp": start_time,
                 "order_type": "MARKET",
-                "filled_price": flip_price,
-                "filled_quantity": flip_qty,
             }
         ]
     )
-    portfolio.fill_order(portfolio.open_orders[0])
+    order = portfolio.open_orders[0]
+    order.add_fill(
+        quantity=flip_order["quantity"], price=flip_order["price"], timestamp=start_time
+    )
+    portfolio.fill_order(order)
 
     position = portfolio.positions["AAPL"]
     assert position.quantity == expected_quantity
-    assert position.cost_basis == flip_price
+    assert position.cost_basis == flip_order["price"]
+
+
+def test_partial_fill_handling(portfolio, start_time):
+    """Test handling of partial fills with proper fill tracking."""
+    # Create an order for 100 shares
+    order_details = {
+        "symbol": "AAPL",
+        "quantity": 100,
+        "side": OrderSide.BUY,
+        "timestamp": start_time,
+        "order_type": OrderType.MARKET,
+    }
+    portfolio.add_orders([order_details])
+    order = portfolio.open_orders[0]
+
+    # First partial fill
+    order.add_fill(quantity=40, price=150.0, timestamp=start_time)
+    portfolio.fill_order(order)
+
+    # Check position after first fill
+    assert "AAPL" in portfolio.positions
+    position = portfolio.positions["AAPL"]
+    assert position.quantity == 40
+    assert position.cost_basis == 150.0
+    assert order.status == OrderStatus.PARTIALLY_FILLED
+    assert order.filled_quantity == 40
+    assert order.filled_price == 150.0
+
+    # Second partial fill at different price
+    order.add_fill(quantity=60, price=155.0, timestamp=start_time)
+    portfolio.fill_order(order)
+
+    # Check position after second fill
+    position = portfolio.positions["AAPL"]
+    assert position.quantity == 100
+    assert abs(position.cost_basis - 153.0) < 1e-10  # (40*150 + 60*155)/100 = 153
+    assert order.status == OrderStatus.FILLED
+    assert order.filled_quantity == 100
+    assert abs(order.filled_price - 153.0) < 1e-10
+
+
+def test_fill_tracking(portfolio, start_time):
+    """Test that fills are properly tracked in the order."""
+    order_details = {
+        "symbol": "AAPL",
+        "quantity": 50,
+        "side": OrderSide.BUY,
+        "timestamp": start_time,
+        "order_type": OrderType.MARKET,
+    }
+    portfolio.add_orders([order_details])
+    order = portfolio.open_orders[0]
+
+    # Add multiple fills
+    fills = [
+        (20, 150.0, start_time),
+        (20, 151.0, start_time + timedelta(minutes=1)),
+        (10, 152.0, start_time + timedelta(minutes=2)),
+    ]
+
+    for qty, price, time in fills:
+        order.add_fill(quantity=qty, price=price, timestamp=time)
+        portfolio.fill_order(order)
+
+    # Verify fills are tracked
+    assert len(order.fills) == 3
+    assert [f.quantity for f in order.fills] == [20, 20, 10]
+    assert [f.price for f in order.fills] == [150.0, 151.0, 152.0]
+
+    # Verify average price calculation
+    expected_avg = (20 * 150.0 + 20 * 151.0 + 10 * 152.0) / 50
+    assert abs(order.filled_price - expected_avg) < 1e-10
+
+
+def test_position_update_from_fills(portfolio, start_time):
+    """Test that position is updated correctly from fills."""
+    # Create initial long position
+    buy_order = {
+        "symbol": "AAPL",
+        "quantity": 100,
+        "side": OrderSide.BUY,
+        "timestamp": start_time,
+        "order_type": OrderType.MARKET,
+    }
+    portfolio.add_orders([buy_order])
+    order = portfolio.open_orders[0]
+
+    # Fill in parts
+    order.add_fill(quantity=60, price=150.0, timestamp=start_time)
+    portfolio.fill_order(order)
+    order.add_fill(quantity=40, price=155.0, timestamp=start_time)
+    portfolio.fill_order(order)
+
+    # Verify position
+    position = portfolio.positions["AAPL"]
+    assert position.quantity == 100
+    expected_cost = (60 * 150.0 + 40 * 155.0) / 100
+    assert abs(position.cost_basis - expected_cost) < 1e-10
+
+    # Now sell partially
+    sell_order = {
+        "symbol": "AAPL",
+        "quantity": 80,
+        "side": OrderSide.SELL,
+        "timestamp": start_time,
+        "order_type": OrderType.MARKET,
+    }
+    portfolio.add_orders([sell_order])
+    order = portfolio.open_orders[1]
+
+    # Partial sells
+    order.add_fill(quantity=50, price=160.0, timestamp=start_time)
+    portfolio.fill_order(order)
+    order.add_fill(quantity=30, price=162.0, timestamp=start_time)
+    portfolio.fill_order(order)
+
+    # Verify final position
+    position = portfolio.positions["AAPL"]
+    assert position.quantity == 20  # 100 - 80
+    assert (
+        position.cost_basis == expected_cost
+    )  # Cost basis shouldn't change for remaining shares
