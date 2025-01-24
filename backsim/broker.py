@@ -254,61 +254,42 @@ class Broker:
                     order.quantity - order.filled_quantity
                 )  # Remaining quantity
 
-            # For limit orders, validate price conditions
-            sell_to_open_short = (
-                order.side == OrderSide.SELL and order.quantity > 0
-            )  # Sell to open short (or reduce long)
-            buy_to_open_short = (
-                order.side == OrderSide.BUY and order.quantity < 0
-            )  # Buy to open short
-            is_long = not (
-                sell_to_open_short or buy_to_open_short
-            )  # long position (close short via sell + open long via buy)
-
-            # Validate price based on effective direction
             if order.order_type == OrderType.LIMIT:
-                if is_long:
-                    # For opening longs or closing shorts: require fill_price <= limit_price
-                    price_valid = fill_price <= order.limit_price
-                else:
-                    # For opening shorts or closing longs: require fill_price >= limit_price
-                    price_valid = fill_price >= order.limit_price
+                # Universal rule based on order side
+                price_valid = (
+                    order.side == OrderSide.BUY and fill_price <= order.limit_price
+                ) or (order.side == OrderSide.SELL and fill_price >= order.limit_price)
 
                 if not price_valid:
-                    continue  # wait for price conditions to be fulfilled
+                    continue  # Skip fill; wait for price criteria
 
-            # Now check margin requirements with the actual fill price
-            if self.margin_model and self.allow_partial_margin_fills:
-                # Create a FillResult for margin calculation
-                # TODO: don't recreate FillResult...
-                fill_result = FillResult(price=fill_price, quantity=fill_quantity)
-
-                fillable_quantity = self.margin_model(portfolio, order, fill_result)
-                if (fillable_quantity * fill_price) < EPSILON:
-                    # can't fill because of margin requirements
-                    order.status = OrderStatus.REJECTED
-                    portfolio.close_order(order)
-                    logger.info(f"Order rejected due to insufficient margin: {order}")
-                    continue
-            elif self.margin_model:
+            # Check margin requirements
+            if self.margin_model is not None:
                 if not self.margin_model.can_fill_order(portfolio, order, fill_result):
-                    order.status = OrderStatus.REJECTED
-                    portfolio.close_order(order)
-                    logger.info(f"Order rejected due to insufficient margin: {order}")
-                    continue
+                    if not self.allow_partial_margin_fills:
+                        order.status = OrderStatus.REJECTED
+
+                        portfolio.close_order(order)
+                        continue
+                    # Compute partial fill quantity
+                    fill_result.quantity = self.margin_model.compute_fillable_quantity(
+                        portfolio, order, fill_result
+                    )
+                    if fill_result.quantity <= EPSILON:
+                        order.status = OrderStatus.REJECTED
+
+                        portfolio.close_order(order)
+                        continue
                 fillable_quantity = fill_quantity
             else:
                 # if no margin model, assume full quantity is fillable
                 fillable_quantity = fill_quantity
 
             # Determine final fill quantity
-            final_quantity = copysign(
-                min(
-                    abs(fill_quantity),
-                    abs(fillable_quantity),
-                    abs(order.quantity - order.filled_quantity),  # Remaining quantity
-                ),
-                order.quantity,
+            final_quantity = min(
+                fill_quantity,
+                fillable_quantity,
+                order.quantity - order.filled_quantity,  # Remaining quantity
             )
 
             # Update order state

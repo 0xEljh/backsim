@@ -217,6 +217,44 @@ class Portfolio:
         """
         return self._cash - self.total_margin
 
+    def get_position(self, symbol: str) -> Optional[Position]:
+        """
+        Get position for a symbol. Returns None if position doesn't exist.
+
+        Args:
+            symbol: Symbol to get position for
+
+        Returns:
+            Position object if exists, None otherwise
+        """
+        return self.positions.get(symbol)
+
+    def get_position_quantity(self, symbol: str) -> float:
+        """
+        Get position quantity for a symbol. Returns 0 if position doesn't exist.
+
+        Args:
+            symbol: Symbol to get position quantity for
+
+        Returns:
+            Position quantity if exists, 0 otherwise
+        """
+        position = self.get_position(symbol)
+        return position.quantity if position else 0.0
+
+    def get_position_side(self, symbol: str) -> Optional[PositionSide]:
+        """
+        Get position side for a symbol. Returns None if position doesn't exist.
+
+        Args:
+            symbol: Symbol to get position side for
+
+        Returns:
+            Position side if exists, None otherwise
+        """
+        position = self.get_position(symbol)
+        return position.side if position else None
+
     def add_orders(self, orders: List[Dict]):
         """
         Add new orders to the portfolio.
@@ -245,7 +283,7 @@ class Portfolio:
                 **remaining_keyword_args,
             )
 
-            if order.quantity == 0:
+            if order.quantity <= 0:
                 # reject order
                 order.status = OrderStatus.REJECTED
                 logger.warning(f"Rejected invalid quantity order: {order}")

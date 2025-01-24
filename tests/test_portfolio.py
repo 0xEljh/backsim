@@ -230,7 +230,6 @@ def test_negative_cash_handling(portfolio, start_time):
         # Long to Short
         ((100, 15.0, "BUY"), (200, 16.0, "SELL"), -100),
         # Short to Long
-        ((-100, 15.0, "BUY"), (200, 14.0, "BUY"), 100),
         ((100, 15.0, "SELL"), (200, 14.0, "BUY"), 100),
     ],
 )

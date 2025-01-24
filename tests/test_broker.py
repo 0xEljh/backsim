@@ -208,9 +208,9 @@ def test_limit_order_directionality_long(broker, portfolio, start_time):
     limit_price = 101.0  # Above 2nd day close price
     order_dict = {
         "symbol": "AAPL",
-        "quantity": 10,  # Positive quantity = long
+        "quantity": 10,
         "order_type": OrderType.LIMIT,
-        "side": OrderSide.BUY,
+        "side": OrderSide.BUY,  # Buy to open long
         "timestamp": start_time,
         "limit_price": limit_price,
     }
@@ -231,9 +231,9 @@ def test_limit_order_directionality_long(broker, portfolio, start_time):
     sell_limit_price = 104.5  # Below 4th day close price, above 3rd
     sell_order_dict = {
         "symbol": "AAPL",
-        "quantity": 5,  # Positive quantity = reduce long
+        "quantity": 5,  # Positive quantity to reduce long
         "order_type": OrderType.LIMIT,
-        "side": OrderSide.SELL,
+        "side": OrderSide.SELL,  # Sell to reduce long
         "timestamp": start_time + timedelta(days=2),
         "limit_price": sell_limit_price,
     }
@@ -256,9 +256,9 @@ def test_limit_order_directionality_short(broker, portfolio, start_time):
     limit_price = 103.0  # Below 3rd day close price; above prev days
     order_dict = {
         "symbol": "AAPL",
-        "quantity": -10,  # Negative quantity = short
+        "quantity": 10,
         "order_type": OrderType.LIMIT,
-        "side": OrderSide.BUY,
+        "side": OrderSide.SELL,  # Sell to open short
         "timestamp": start_time,
         "limit_price": limit_price,
     }
@@ -273,23 +273,55 @@ def test_limit_order_directionality_short(broker, portfolio, start_time):
     assert len(portfolio.closed_orders) == 1
     assert portfolio.positions["AAPL"].quantity == -10  # Short position established
 
-    # Now sell negative quantity to reduce short
-    sell_limit_price = 105
-    sell_order_dict = {
+    # Now buy positive quantity to reduce short
+    buy_limit_price = 105.0
+    buy_order_dict = {
         "symbol": "AAPL",
-        "quantity": -5,  # Negative quantity = reduce short
+        "quantity": 5,  # Positive quantity to reduce short
         "order_type": OrderType.LIMIT,
-        "side": OrderSide.SELL,
+        "side": OrderSide.BUY,  # Buy to reduce short
         "timestamp": start_time + timedelta(days=3),
-        "limit_price": sell_limit_price,
+        "limit_price": buy_limit_price,
     }
-    portfolio.add_orders([sell_order_dict])
+    portfolio.add_orders([buy_order_dict])
 
     # Process fills when price drops to limit
-    broker.process_fills(portfolio, start_time + timedelta(days=4))
+    broker.process_fills(portfolio, start_time + timedelta(days=3))
     assert len(portfolio.open_orders) == 0
     assert len(portfolio.closed_orders) == 2
     assert portfolio.positions["AAPL"].quantity == -5  # Short position reduced
+
+
+def test_negative_quantity_rejection(broker, portfolio, start_time):
+    """Test that negative quantity orders are rejected."""
+    order_dict = {
+        "symbol": "AAPL",
+        "quantity": -10,  # Negative quantity should be rejected
+        "order_type": OrderType.LIMIT,
+        "side": OrderSide.BUY,
+        "timestamp": start_time,
+        "limit_price": 100.0,
+    }
+    portfolio.add_orders([order_dict])
+
+    broker.process_fills(portfolio, start_time)
+    assert len(portfolio.closed_orders) == 1
+    assert portfolio.closed_orders[0].status == OrderStatus.REJECTED
+
+
+def test_zero_quantity_order(broker, portfolio, start_time):
+    """Test that zero quantity orders are rejected."""
+    order_dict = {
+        "symbol": "AAPL",
+        "quantity": 0,
+        "order_type": OrderType.MARKET,
+        "side": OrderSide.BUY,
+        "timestamp": start_time,
+    }
+    portfolio.add_orders([order_dict])
+    broker.process_fills(portfolio, start_time)
+
+    assert portfolio.closed_orders[0].status == OrderStatus.REJECTED
 
 
 # Custom Fill Model Tests
@@ -315,51 +347,3 @@ def test_custom_fill_model(sample_universe_data, portfolio, start_time):
     broker.process_fills(portfolio, start_time)
 
     assert portfolio.closed_orders[0].filled_price == expected_fill_price
-
-
-# Edge Cases
-# Negative quantitiies are currently accepted behavior
-# def test_negative_quantity_order(broker, portfolio, start_time):
-#     """Test that negative quantity orders are rejected."""
-#     order_dict = {
-#         "symbol": "AAPL",
-#         "quantity": -10,  # Negative quantity
-#         "order_type": OrderType.MARKET,
-#         "side": OrderSide.BUY,
-#         "timestamp": start_time,
-#     }
-#     portfolio.add_orders([order_dict])
-#     broker.process_fills(portfolio, start_time)
-
-#     assert portfolio.closed_orders[0].status == OrderStatus.REJECTED
-
-
-def test_zero_quantity_order(broker, portfolio, start_time):
-    """Test that zero quantity orders are rejected."""
-    order_dict = {
-        "symbol": "AAPL",
-        "quantity": 0,
-        "order_type": OrderType.MARKET,
-        "side": OrderSide.BUY,
-        "timestamp": start_time,
-    }
-    portfolio.add_orders([order_dict])
-    broker.process_fills(portfolio, start_time)
-
-    assert portfolio.closed_orders[0].status == OrderStatus.REJECTED
-
-
-# def test_limit_order_none_price(broker, portfolio, start_time):
-#     """Test that limit orders with None price are rejected."""
-#     order_dict = {
-#         "symbol": "AAPL",
-#         "quantity": 10,
-#         "order_type": OrderType.LIMIT,
-#         "side": OrderSide.BUY,
-#         "timestamp": start_time,
-#         "limit_price": None,
-#     }
-#     portfolio.add_orders([order_dict])
-#     broker.process_fills(portfolio, start_time)
-
-#     assert portfolio.closed_orders[0].status == OrderStatus.REJECTED
