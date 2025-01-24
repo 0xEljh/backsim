@@ -244,6 +244,14 @@ class Portfolio:
                 leverage_ratio=leverage_ratio,
                 **remaining_keyword_args,
             )
+
+            if order.quantity == 0:
+                # reject order
+                order.status = OrderStatus.REJECTED
+                logger.warning(f"Rejected invalid quantity order: {order}")
+                self.closed_orders.append(order)
+                continue
+
             self.open_orders.append(order)
 
     def close_order(self, order: Order, non_existent_order_ok=False):

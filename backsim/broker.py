@@ -225,7 +225,7 @@ class Broker:
         ready_orders = [
             order
             for order in portfolio.open_orders[:]
-            if (timestamp - order.timestamp) <= self.fill_delay
+            if (timestamp - order.timestamp) >= self.fill_delay
         ]
 
         for order in ready_orders:
@@ -254,19 +254,28 @@ class Broker:
                     order.quantity - order.filled_quantity
                 )  # Remaining quantity
 
-            # TODO: revisit logic on limit order fills.
-
             # For limit orders, validate price conditions
-            # TODO: This logic assumes that OrderSide ALONE (quantity is ignored) determines order side
+            sell_to_open_short = (
+                order.side == OrderSide.SELL and order.quantity > 0
+            )  # Sell to open short (or reduce long)
+            buy_to_open_short = (
+                order.side == OrderSide.BUY and order.quantity < 0
+            )  # Buy to open short
+            is_long = not (
+                sell_to_open_short or buy_to_open_short
+            )  # long position (close short via sell + open long via buy)
+
+            # Validate price based on effective direction
             if order.order_type == OrderType.LIMIT:
-                price_valid = (
-                    order.side == OrderSide.BUY and fill_price <= order.limit_price
-                ) or (order.side == OrderSide.SELL and fill_price >= order.limit_price)
+                if is_long:
+                    # For opening longs or closing shorts: require fill_price <= limit_price
+                    price_valid = fill_price <= order.limit_price
+                else:
+                    # For opening shorts or closing longs: require fill_price >= limit_price
+                    price_valid = fill_price >= order.limit_price
+
                 if not price_valid:
-                    logger.debug(
-                        f"Waiting for better price on {order} as current price is {fill_price}"
-                    )
-                    continue  # Wait for better price
+                    continue  # wait for price conditions to be fulfilled
 
             # Now check margin requirements with the actual fill price
             if self.margin_model and self.allow_partial_margin_fills:

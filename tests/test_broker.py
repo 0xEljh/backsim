@@ -24,10 +24,10 @@ def sample_universe_data():
     data = {
         "AAPL": pd.DataFrame(
             {
-                "open": [100, 101, 102, 103, 104],
+                "open": [100, 101, 100, 103, 104],
                 "high": [105, 106, 107, 108, 109],
                 "low": [95, 96, 97, 98, 99],
-                "close": [102, 103, 104, 105, 106],
+                "close": [102, 99, 104, 105, 106],
                 "volume": [1000, 1100, 1200, 1300, 1400],
             },
             index=dates,
@@ -83,16 +83,16 @@ def broker(sample_universe_data):
 
 
 # Custom fill model for testing
-class TestFillModel(FillModel):
-    """Fill model that returns a predefined price for testing."""
+class FixedPriceFillModel(FillModel):
+    """Fill model that uses a fixed price for testing"""
 
     def __init__(self, fill_price: float):
+        super().__init__()  # Call parent constructor if needed
         self.fill_price = fill_price
 
-    def get_fill(
-        self, order: Order, timestamp: datetime, universe: AssetUniverse
-    ) -> FillResult:
-        return FillResult(price=self.fill_price, quantity=order.quantity)
+    def get_fill(self, order, timestamp, universe):
+        # Implementation that returns the fixed price
+        return FillResult(self.fill_price, order.quantity)
 
 
 # Market Order Tests
@@ -139,7 +139,7 @@ def test_market_order_insufficient_margin(broker, portfolio, start_time):
 def test_limit_order_execution(broker, portfolio, start_time):
     """Test limit order fills when price conditions are met."""
     # Set limit price above current market price for a sell order
-    limit_price = 108.0  # Above AAPL's close price
+    limit_price = 104.5  # above 3rd day close price, below 4th day close price
 
     # First establish a position
     market_order_dict = {
@@ -164,6 +164,11 @@ def test_limit_order_execution(broker, portfolio, start_time):
         "limit_price": limit_price,
     }
     portfolio.add_orders([limit_order_dict])
+
+    # Process at a time when price is below limit
+    broker.process_fills(portfolio, start_time + timedelta(days=2))
+    assert len(portfolio.open_orders) == 1
+    assert len(portfolio.closed_orders) == 1
 
     # Process at a time when price is above limit
     broker.process_fills(portfolio, start_time + timedelta(days=3))
@@ -196,11 +201,102 @@ def test_limit_order_expiry(broker, portfolio, start_time):
     assert portfolio.closed_orders[0].status == OrderStatus.EXPIRED
 
 
+def test_limit_order_directionality_long(broker, portfolio, start_time):
+    """Test limit order directionality for going long."""
+    # Buy positive quantity to establish long position
+    # AAPL (close) prices: 102, 99, 104, 105, 106
+    limit_price = 101.0  # Above 2nd day close price
+    order_dict = {
+        "symbol": "AAPL",
+        "quantity": 10,  # Positive quantity = long
+        "order_type": OrderType.LIMIT,
+        "side": OrderSide.BUY,
+        "timestamp": start_time,
+        "limit_price": limit_price,
+    }
+    portfolio.add_orders([order_dict])
+
+    # Process at a time when price is above limit (should not fill)
+    broker.process_fills(portfolio, start_time)
+    assert len(portfolio.open_orders) == 1
+    assert len(portfolio.closed_orders) == 0
+
+    # Process at a time when price is below limit
+    broker.process_fills(portfolio, start_time + timedelta(days=1))
+    assert len(portfolio.open_orders) == 0
+    assert len(portfolio.closed_orders) == 1
+    assert portfolio.positions["AAPL"].quantity == 10  # Long position established
+
+    # Now sell positive quantity to reduce long
+    sell_limit_price = 104.5  # Below 4th day close price, above 3rd
+    sell_order_dict = {
+        "symbol": "AAPL",
+        "quantity": 5,  # Positive quantity = reduce long
+        "order_type": OrderType.LIMIT,
+        "side": OrderSide.SELL,
+        "timestamp": start_time + timedelta(days=2),
+        "limit_price": sell_limit_price,
+    }
+    portfolio.add_orders([sell_order_dict])
+
+    broker.process_fills(portfolio, start_time + timedelta(days=2))
+    assert len(portfolio.open_orders) == 1
+
+    # Process fills when price rises above limit
+    broker.process_fills(portfolio, start_time + timedelta(days=3))
+    assert len(portfolio.open_orders) == 0
+    assert len(portfolio.closed_orders) == 2
+    assert portfolio.positions["AAPL"].quantity == 5  # Long position reduced
+
+
+def test_limit_order_directionality_short(broker, portfolio, start_time):
+    """Test limit order directionality for going short."""
+    # Buy negative quantity to establish short position
+    # AAPL (close) prices: 102, 99, 104, 105, 106
+    limit_price = 103.0  # Below 3rd day close price; above prev days
+    order_dict = {
+        "symbol": "AAPL",
+        "quantity": -10,  # Negative quantity = short
+        "order_type": OrderType.LIMIT,
+        "side": OrderSide.BUY,
+        "timestamp": start_time,
+        "limit_price": limit_price,
+    }
+    portfolio.add_orders([order_dict])
+
+    broker.process_fills(portfolio, start_time)
+    assert len(portfolio.open_orders) == 1
+
+    # Process at a time when price is above limit (should fill)
+    broker.process_fills(portfolio, start_time + timedelta(days=2))
+    assert len(portfolio.open_orders) == 0
+    assert len(portfolio.closed_orders) == 1
+    assert portfolio.positions["AAPL"].quantity == -10  # Short position established
+
+    # Now sell negative quantity to reduce short
+    sell_limit_price = 105
+    sell_order_dict = {
+        "symbol": "AAPL",
+        "quantity": -5,  # Negative quantity = reduce short
+        "order_type": OrderType.LIMIT,
+        "side": OrderSide.SELL,
+        "timestamp": start_time + timedelta(days=3),
+        "limit_price": sell_limit_price,
+    }
+    portfolio.add_orders([sell_order_dict])
+
+    # Process fills when price drops to limit
+    broker.process_fills(portfolio, start_time + timedelta(days=4))
+    assert len(portfolio.open_orders) == 0
+    assert len(portfolio.closed_orders) == 2
+    assert portfolio.positions["AAPL"].quantity == -5  # Short position reduced
+
+
 # Custom Fill Model Tests
 def test_custom_fill_model(sample_universe_data, portfolio, start_time):
     """Test that custom fill model's price is used."""
     expected_fill_price = 150.0
-    custom_fill_model = TestFillModel(fill_price=expected_fill_price)
+    custom_fill_model = FixedPriceFillModel(fill_price=expected_fill_price)
 
     broker = Broker(
         asset_universe=sample_universe_data,
@@ -222,19 +318,20 @@ def test_custom_fill_model(sample_universe_data, portfolio, start_time):
 
 
 # Edge Cases
-def test_negative_quantity_order(broker, portfolio, start_time):
-    """Test that negative quantity orders are rejected."""
-    order_dict = {
-        "symbol": "AAPL",
-        "quantity": -10,  # Negative quantity
-        "order_type": OrderType.MARKET,
-        "side": OrderSide.BUY,
-        "timestamp": start_time,
-    }
-    portfolio.add_orders([order_dict])
-    broker.process_fills(portfolio, start_time)
+# Negative quantitiies are currently accepted behavior
+# def test_negative_quantity_order(broker, portfolio, start_time):
+#     """Test that negative quantity orders are rejected."""
+#     order_dict = {
+#         "symbol": "AAPL",
+#         "quantity": -10,  # Negative quantity
+#         "order_type": OrderType.MARKET,
+#         "side": OrderSide.BUY,
+#         "timestamp": start_time,
+#     }
+#     portfolio.add_orders([order_dict])
+#     broker.process_fills(portfolio, start_time)
 
-    assert portfolio.closed_orders[0].status == OrderStatus.REJECTED
+#     assert portfolio.closed_orders[0].status == OrderStatus.REJECTED
 
 
 def test_zero_quantity_order(broker, portfolio, start_time):
