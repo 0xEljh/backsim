@@ -401,7 +401,8 @@ def test_volume_aware_limit_fill_model(sample_universe_data, portfolio, start_ti
 
     # Verify partial fill
     assert len(portfolio.closed_orders) == 1  # a partial fill order is not closed
-    partial_filled_sell = portfolio.open_orders[1]
+    assert len(portfolio.open_orders) == 1
+    partial_filled_sell = portfolio.open_orders[0]
     assert partial_filled_sell.status == OrderStatus.PARTIALLY_FILLED
     assert partial_filled_sell.filled_price == 205.0  # Should fill at limit
     assert partial_filled_sell.filled_quantity == 20  # Limited by bar volume
@@ -418,8 +419,11 @@ def test_volume_aware_limit_fill_model(sample_universe_data, portfolio, start_ti
     portfolio.add_orders([no_fill_order_dict])
     broker.process_fills(portfolio, start_time)
 
+    # now the previously partial filled order should fill since volume requirement is met
+
     # Verify no fill
     assert len(portfolio.open_orders) == 1
+    assert portfolio.open_orders[0].side == OrderSide.BUY
     assert portfolio.open_orders[0].status == OrderStatus.PENDING
 
 

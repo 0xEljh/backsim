@@ -291,7 +291,7 @@ def test_partial_fill_handling(portfolio, start_time):
     # Create an order for 100 shares
     order_details = {
         "symbol": "AAPL",
-        "quantity": 100,
+        "quantity": 10,
         "side": OrderSide.BUY,
         "timestamp": start_time,
         "order_type": OrderType.MARKET,
@@ -300,28 +300,28 @@ def test_partial_fill_handling(portfolio, start_time):
     order = portfolio.open_orders[0]
 
     # First partial fill
-    order.add_fill(quantity=40, price=150.0, timestamp=start_time)
+    order.add_fill(quantity=4, price=150.0, timestamp=start_time)
     portfolio.fill_order(order)
 
     # Check position after first fill
     assert "AAPL" in portfolio.positions
     position = portfolio.positions["AAPL"]
-    assert position.quantity == 40
+    assert position.quantity == 4
     assert position.cost_basis == 150.0
     assert order.status == OrderStatus.PARTIALLY_FILLED
-    assert order.filled_quantity == 40
+    assert order.filled_quantity == 4
     assert order.filled_price == 150.0
 
     # Second partial fill at different price
-    order.add_fill(quantity=60, price=155.0, timestamp=start_time)
+    order.add_fill(quantity=6, price=155.0, timestamp=start_time)
     portfolio.fill_order(order)
 
     # Check position after second fill
     position = portfolio.positions["AAPL"]
-    assert position.quantity == 100
+    assert position.quantity == 10
     assert abs(position.cost_basis - 153.0) < 1e-10  # (40*150 + 60*155)/100 = 153
     assert order.status == OrderStatus.FILLED
-    assert order.filled_quantity == 100
+    assert order.filled_quantity == 10
     assert abs(order.filled_price - 153.0) < 1e-10
 
 
@@ -363,7 +363,7 @@ def test_position_update_from_fills(portfolio, start_time):
     # Create initial long position
     buy_order = {
         "symbol": "AAPL",
-        "quantity": 100,
+        "quantity": 10,
         "side": OrderSide.BUY,
         "timestamp": start_time,
         "order_type": OrderType.MARKET,
@@ -372,37 +372,41 @@ def test_position_update_from_fills(portfolio, start_time):
     order = portfolio.open_orders[0]
 
     # Fill in parts
-    order.add_fill(quantity=60, price=150.0, timestamp=start_time)
+    order.add_fill(quantity=6, price=150.0, timestamp=start_time)
     portfolio.fill_order(order)
-    order.add_fill(quantity=40, price=155.0, timestamp=start_time)
+    order.add_fill(quantity=4, price=155.0, timestamp=start_time)
     portfolio.fill_order(order)
 
     # Verify position
     position = portfolio.positions["AAPL"]
-    assert position.quantity == 100
-    expected_cost = (60 * 150.0 + 40 * 155.0) / 100
+    assert position.quantity == 10
+    expected_cost = (6 * 150.0 + 4 * 155.0) / 10
     assert abs(position.cost_basis - expected_cost) < 1e-10
+
+    # now fully filled, so there should be no open orders
+    assert len(portfolio.open_orders) == 0
+    assert len(portfolio.closed_orders) == 1
 
     # Now sell partially
     sell_order = {
         "symbol": "AAPL",
-        "quantity": 80,
+        "quantity": 8,
         "side": OrderSide.SELL,
         "timestamp": start_time,
         "order_type": OrderType.MARKET,
     }
     portfolio.add_orders([sell_order])
-    order = portfolio.open_orders[1]
+    order = portfolio.open_orders[0]
 
     # Partial sells
-    order.add_fill(quantity=50, price=160.0, timestamp=start_time)
+    order.add_fill(quantity=5, price=160.0, timestamp=start_time)
     portfolio.fill_order(order)
-    order.add_fill(quantity=30, price=162.0, timestamp=start_time)
+    order.add_fill(quantity=3, price=162.0, timestamp=start_time)
     portfolio.fill_order(order)
 
     # Verify final position
     position = portfolio.positions["AAPL"]
-    assert position.quantity == 20  # 100 - 80
+    assert position.quantity == 2  # 10 - 8
     assert (
         position.cost_basis == expected_cost
     )  # Cost basis shouldn't change for remaining shares
