@@ -120,6 +120,19 @@ class Order:
             f"fees_incurred={self.fees_incurred})"
         )
 
+    # allow dictionary like access of Order
+    def __getitem__(self, key: str):
+        """Get attribute using dictionary-like access."""
+        return getattr(self, key)
+
+    def __setitem__(self, key: str, value):
+        """Set attribute using dictionary-like access."""
+        setattr(self, key, value)
+
+    def __contains__(self, key: str) -> bool:
+        """Check if attribute exists using 'in' operator."""
+        return hasattr(self, key)
+
 
 @dataclass
 class Position:
