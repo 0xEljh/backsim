@@ -260,7 +260,9 @@ class Broker:
         # price_matrix: pd.DataFrame,
         fill_model: Optional[FillModel] = None,
         margin_model: Optional[MarginModel] = None,
-        fill_delay: timedelta = timedelta(0),
+        fill_delay: timedelta = timedelta(
+            0
+        ),  # set to non-zero value to prevent look-ahead
         allow_partial_margin_fills: bool = False,
         fallback_price_field: str = "close",  # or "open", etc
     ):
