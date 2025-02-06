@@ -14,6 +14,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+EPSILON = 1e-12
+
 
 class OrderSide(Enum):
     BUY = "BUY"
@@ -108,8 +110,6 @@ class Order:
 
     @property
     def is_fully_filled(self):
-        # if self.status != OrderStatus.FILLED:
-        #     return False
         return self.filled_quantity == self.quantity
 
     def __str__(self):
@@ -215,17 +215,41 @@ class Position:
 
         # Use the latest fill
         latest_fill = order.fills[-1]
-        return self.update_from_fill(latest_fill, order)
+
+        # calculate fill cash flow; if short, we want to credit cash
+        sign = 1 if order.side in (OrderSide.SELL, "SELL") else -1
+        fill_cash_flow = sign * latest_fill.quantity * latest_fill.price
+
+        return self.update_from_fill(latest_fill, order), fill_cash_flow
+
+    def get_unrealized_pnl(self, current_price: float) -> float:
+        """
+        Calculate unrealized P&L for the position.
+        For longs: (current_price - cost_basis) * quantity.
+        For shorts: (cost_basis - current_price) * abs(quantity).
+        """
+        if self.quantity > 0:
+            return (current_price - self.cost_basis) * self.quantity
+        elif self.quantity < 0:
+            return (self.cost_basis - current_price) * abs(self.quantity)
+        else:
+            return 0.0
+
+    # def margin_usage(self, current_price: float) -> float:
+    #     """
+    #     Compute the current margin usage. In this simple model,
+    #     margin scales with the price relative to the cost basis.
+    #     """
+    #     return self.initial_margin * (current_price / self.cost_basis)
 
     @property
-    def value(self) -> float:
-        """Current position value."""
-        return abs(self.quantity * self.cost_basis)
+    def notional_value(self) -> float:
+        return abs(self.quantity) * self.cost_basis
 
     @property
     def is_zero(self) -> bool:
         """Check if position is effectively zero."""
-        return abs(self.quantity) < 1e-10
+        return self.notional_value < EPSILON
 
     @property
     def side(self):
@@ -241,17 +265,11 @@ class Position:
         inital_position_value = abs(self.quantity * self.cost_basis)
         return inital_position_value / self.initial_margin
 
-    @property
-    def is_zero(self):
-        # either define by quantity or define by value
-        return self.quantity == 0
-
-    def __repr__(self):
-        return f"Position(symbol={self.symbol}, quantity={self.quantity}, cost_basis={self.cost_basis}, initial_margin={self.initial_margin}, leverage={self.leverage})"
-
-    def get_unrealized_pnl(self, current_price: float) -> float:
-        """Calculate unrealized P&L for the position."""
-        return (current_price - self.cost_basis) * self.quantity
+    def __repr__(self) -> str:
+        return (
+            f"Position(symbol={self.symbol}, quantity={self.quantity}, "
+            f"cost_basis={self.cost_basis}, initial_margin={self.initial_margin}, side={self.side})"
+        )
 
 
 class Portfolio:
@@ -259,64 +277,15 @@ class Portfolio:
     Tracks positions, orders, and cash balance.
     """
 
-    def __init__(self, initial_cash: float, quantity_matrix):
+    def __init__(self, initial_cash: float, quantity_matrix: QuantityMatrix):
         self._cash: float = initial_cash
         self.positions: Dict[str, Position] = {}
         self.open_orders: List[Order] = []
         self.closed_orders: List[Order] = []
-        self.quantity_matrix = quantity_matrix
+        self.quantity_matrix: QuantityMatrix = quantity_matrix
+        self.latest_prices: Optional[Union[np.ndarray, pd.Series]] = None
 
-    @property
-    def total_margin(self):
-        return sum(position.initial_margin for position in self.positions.values())
-
-    @property
-    def cash(self):
-        """
-        Available cash; i.e. cash not tied up as collateral for positions via margin.
-        Not to be confused with buying power.
-        """
-        return self._cash - self.total_margin
-
-    def get_position(self, symbol: str) -> Optional[Position]:
-        """
-        Get position for a symbol. Returns None if position doesn't exist.
-
-        Args:
-            symbol: Symbol to get position for
-
-        Returns:
-            Position object if exists, None otherwise
-        """
-        return self.positions.get(symbol)
-
-    def get_position_quantity(self, symbol: str) -> float:
-        """
-        Get position quantity for a symbol. Returns 0 if position doesn't exist.
-
-        Args:
-            symbol: Symbol to get position quantity for
-
-        Returns:
-            Position quantity if exists, 0 otherwise
-        """
-        position = self.get_position(symbol)
-        return position.quantity if position else 0.0
-
-    def get_position_side(self, symbol: str) -> Optional[PositionSide]:
-        """
-        Get position side for a symbol. Returns None if position doesn't exist.
-
-        Args:
-            symbol: Symbol to get position side for
-
-        Returns:
-            Position side if exists, None otherwise
-        """
-        position = self.get_position(symbol)
-        return position.side if position else None
-
-    def add_orders(self, orders: List[Dict]):
+    def add_orders(self, orders: List[Union[Order, dict]]):
         """
         Add new orders to the portfolio.
 
@@ -324,26 +293,30 @@ class Portfolio:
             orders: List of order dictionaries containing order details
         """
         for order_dict in orders:
-            # Handle fields with sensible defaults
-            # we purposely avoid pop() here since we don't want to mutate order_dict
-            timestamp = order_dict.get("timestamp", datetime.now())
-            order_type = OrderType(order_dict.get("order_type", "MARKET"))
-            leverage_ratio = order_dict.get("leverage_ratio", 1.0)
+            if type(order_dict) == Order:
+                order = order_dict
+            else:
+                # Handle fields with sensible defaults
+                # we purposely avoid pop() here since we don't want to mutate order_dict
+                timestamp = order_dict.get("timestamp", datetime.now())
+                order_type = OrderType(order_dict.get("order_type", "MARKET"))
+                leverage_ratio = order_dict.get("leverage_ratio", 1.0)
 
-            # Filter out handled keys to avoid duplicates
-            remaining_keyword_args = {
-                k: v
-                for k, v in order_dict.items()
-                if k not in {"timestamp", "order_type", "leverage_ratio"}
-            }
+                # Filter out handled keys to avoid duplicates
+                remaining_keyword_args = {
+                    k: v
+                    for k, v in order_dict.items()
+                    if k not in {"timestamp", "order_type", "leverage_ratio"}
+                }
 
-            order = Order(
-                timestamp=timestamp,
-                order_type=order_type,
-                leverage_ratio=leverage_ratio,
-                **remaining_keyword_args,
-            )
+                order = Order(
+                    timestamp=timestamp,
+                    order_type=order_type,
+                    leverage_ratio=leverage_ratio,
+                    **remaining_keyword_args,
+                )
 
+            # no negative/zero quantity for orders, only positions.
             if order.quantity <= 0:
                 # reject order
                 order.status = OrderStatus.REJECTED
@@ -391,27 +364,31 @@ class Portfolio:
             # re-store open orders, modify this to accomodate
             logger.debug(f"Order updated but still open: {order}")
 
-    def fill_order(self, order: Order):
+    def update_prices(self, prices: pd.Series):
         """
-        Process a fill for an order.
+        Update the latest market prices.
 
         Args:
-            order: Order object to fill
+            prices: A pandas Series with symbols as index and current prices as values.
         """
+        self.latest_prices = prices
 
-        # Update position, if applicable
-        realized_pnl = 0.0
+    def fill_order(self, order: Order):
         if order.symbol in self.positions:
-            realized_pnl = self.positions[order.symbol].update_from_order(order)
-            # update quantity matrix
-            self.quantity_matrix.update_quantity(
-                order.symbol, order.timestamp, self.positions[order.symbol].quantity
-            )
-            if self.positions[order.symbol].is_zero:
-                # close the position
-                self.positions.pop(order.symbol)
+            realized_pnl, fill_cash_flow = self.positions[
+                order.symbol
+            ].update_from_order(order)
+
         else:
-            # opening new position
+            realized_pnl = 0.0  # new position, no PnL
+            # if short, we want to credit cash
+            fill_cash_flow = (
+                order.filled_quantity
+                * order.filled_price
+                * (-1 if order.side in (OrderSide.BUY, "BUY") else 1)
+            )
+
+            # open new position
             self.positions[order.symbol] = Position(
                 symbol=order.symbol,
                 quantity=(
@@ -421,93 +398,91 @@ class Portfolio:
                 cost_basis=order.filled_price,
                 initial_margin=order.margin,
             )
-            # update quantity matrix
-            self.quantity_matrix.update_quantity(
-                order.symbol, order.timestamp, self.positions[order.symbol].quantity
-            )
 
-        # update cash: deduct fees, determine if this was a reduction in position
-        self._cash += realized_pnl - order.fees_incurred
+        # add cash flow, subtract fees
+        self._cash += fill_cash_flow - order.fees_incurred
 
         self.update_order(order)
 
-        if self.cash < 0:  # TODO: decide if cash or _cash
-            raise ValueError("Insufficient cash to continue trading")
+        # TODO: log realized_pnl from the order.
+        # self.log_realized_pnl(order, realized_pnl)
 
-    # TODO: shift this responsibility to broker
-    # def get_margin_status(self, current_prices: Dict[str, float]) -> Dict[str, Dict]:
-    #     """
-    #     Get margin status for all positions.
+        # update quantity matrix
+        if self.positions[order.symbol].is_zero:  # position is effectively closed
+            self.positions.pop(order.symbol)
+            self.quantity_matrix.update_quantity(order.symbol, order.timestamp, 0.0)
+            return
 
-    #     Args:
-    #         current_prices: Dictionary mapping symbols to current prices
+        self.quantity_matrix.update_quantity(
+            order.symbol, order.timestamp, self.positions[order.symbol].quantity
+        )
 
-    def get_snapshot(self, timestamp: datetime) -> Dict:
+    @property
+    def positions_value(self) -> float:
         """
-        Get current portfolio state.
-
-        Args:
-            timestamp: Current simulation timestamp
-
-        Returns:
-            Dict containing portfolio state
+        Total mark-to-market value of all positions using latest price series
         """
-        return {
-            "timestamp": timestamp,
-            "cash": self._cash,
-            "positions": [str(pos) for pos in self.positions.values()],
-        }
+        if not self.positions:
+            return 0.0
 
-    def get_positions_value(
-        self, timestamp: datetime, price_array: Union[np.ndarray, pd.Series]
-    ) -> float:
+        if self.latest_prices is None:
+            # Fallback: use cost_basis if current prices are not available.
+            return sum(pos.quantity * pos.cost_basis for pos in self.positions.values())
+
+        # Get the latest quantities from the QuantityMatrix
+        latest_quantities = self.quantity_matrix.matrix.iloc[-1]
+
+        # Calculate the total value using vectorized operations
+        return (latest_quantities * self.latest_prices).sum()
+
+    @property
+    def portfolio_value(self) -> float:
         """
-        Calculate total position value.
-
-        Args:
-            timestamp: Current timestamp
-
-        Returns:
-            Total position value
+        Net portfolio value = positions_value + cash.
+        Short positions add negative contributions automatically.
         """
-        # get last row of quantity matrix
-        quantity_array = self.quantity_matrix.get_matrix(
-            up_to_timestamp=timestamp
-        ).iloc[-1]
 
-        # depending on type of price array, calculate dot product
-        if isinstance(price_array, np.ndarray):
-            return np.dot(quantity_array, price_array)
-        elif isinstance(price_array, pd.Series):
-            return quantity_array.dot(price_array)
-        else:
-            raise ValueError("Invalid price array type")
+        return self.positions_value + self._cash
 
-    def get_portfolio_value(
-        self, timestamp: datetime, price_array: Union[np.ndarray, pd.Series]
-    ) -> float:
+    @property
+    def used_margin(self) -> float:
         """
-        Calculate total portfolio value including cash. i.e. total position value + cash
-
-        Args:
-            timestamp: Current timestamp
-
-        Returns:
-            Total portfolio value
+        Sum of the per-position margin usage (maintenance margin).
         """
-        # Calculate the total value of all positions
-        positions_value = self.get_positions_value(timestamp, price_array)
+        if not self.positions:
+            return 0.0
+        if self.latest_prices is None:
+            return sum(pos.initial_margin for pos in self.positions.values())
 
-        # Add the cash balance to the positions value
-        portfolio_value = self._cash + positions_value
+        # Create a DataFrame from positions.
+        df = pd.DataFrame(
+            {
+                "cost_basis": {
+                    sym: pos.cost_basis for sym, pos in self.positions.items()
+                },
+                "initial_margin": {
+                    sym: pos.initial_margin for sym, pos in self.positions.items()
+                },
+            }
+        )
 
-        # portfolio value should never be negative
-        if portfolio_value < 0:
-            logger.warning(
-                f"Portfolio value is negative, something is wrong: {portfolio_value}"
-            )
+        if self.latest_prices is None:
+            logger.warning("get_total_margin_usage: latest_prices is None")
+            return sum(pos.initial_margin for pos in self.positions.values())
 
-        return portfolio_value
+        # Get current prices for these symbols.
+        current_prices = self.latest_prices.reindex(df.index, fill_value=0.0)
+
+        # Calculate margin usage for each position; guard against division by zero.
+        df["margin_usage"] = df["initial_margin"] * (
+            current_prices / df["cost_basis"]
+        ).replace([np.inf, -np.inf], 1.0)
+
+        return df["margin_usage"].sum()
+
+    @property
+    def available_margin(self) -> float:
+        return self.portfolio_value - self.used_margin
 
     def cleanup_orders(self):
         """
@@ -522,3 +497,41 @@ class Portfolio:
         for order in orders_to_remove:
             self.open_orders.remove(order)
             self.closed_orders.append(order)
+
+    def get_position(self, symbol: str) -> Optional[Position]:
+        """
+        Get position for a symbol. Returns None if position doesn't exist.
+
+        Args:
+            symbol: Symbol to get position for
+
+        Returns:
+            Position object if exists, None otherwise
+        """
+        return self.positions.get(symbol)
+
+    def get_position_quantity(self, symbol: str) -> float:
+        """
+        Get position quantity for a symbol. Returns 0 if position doesn't exist.
+
+        Args:
+            symbol: Symbol to get position quantity for
+
+        Returns:
+            Position quantity if exists, 0 otherwise
+        """
+        position = self.get_position(symbol)
+        return position.quantity if position else 0.0
+
+    def get_position_side(self, symbol: str) -> Optional[PositionSide]:
+        """
+        Get position side for a symbol. Returns None if position doesn't exist.
+
+        Args:
+            symbol: Symbol to get position side for
+
+        Returns:
+            Position side if exists, None otherwise
+        """
+        position = self.get_position(symbol)
+        return position.side if position else None

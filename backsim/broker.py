@@ -58,7 +58,7 @@ class MarginModel(abc.ABC):
 
 class SimpleCashMargin(MarginModel):
     """
-    Example: The simplest margin model that just checks if we have enough cash
+    Example: The simplest margin model that just checks if we have enough margin
     to buy (or short) the requested quantity at the fill price.
     """
 
@@ -71,7 +71,7 @@ class SimpleCashMargin(MarginModel):
         required_margin = (
             abs(fill_result.quantity * fill_result.price) / order.leverage_ratio
         )
-        return portfolio.cash >= required_margin
+        return portfolio.available_margin >= required_margin
 
     def compute_fillable_quantity(
         self, portfolio: "Portfolio", order: "Order", fill_result: "FillResult"
@@ -80,7 +80,9 @@ class SimpleCashMargin(MarginModel):
             return fill_result.quantity
 
         # Calculate how much quantity we can afford at this price
-        max_quantity = (portfolio.cash * order.leverage_ratio) / abs(fill_result.price)
+        max_quantity = (portfolio.available_margin * order.leverage_ratio) / abs(
+            fill_result.price
+        )
         # Return the minimum of what we can afford and what's available to fill
         # sign of quantity needs to be handled appropriately
         # using math instead of numpy here for performance (TODO: check if it matters, and if correct)

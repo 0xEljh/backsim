@@ -85,66 +85,15 @@ class SMACrossoverStrategy(Strategy):
         self.long_window = long_window
         self.cached_data: Optional[pd.DataFrame] = None
 
-    # def on_simulation_start(self, universe, **kwargs):
-    #     """
-    #     Preload all necessary data from the universe for our symbols.
-    #     This way, we avoid repeated heavy loads each timestep.
-    #     """
-    #     df = universe._df.loc[self.symbols].copy().sort_index()
-    #     self.cached_data = df
-
     def on_simulation_start(self, universe, **kwargs):
         """
         Preload all necessary data from the universe for our symbols.
         This way, we avoid repeated heavy loads each timestep.
         """
-        # Filter data for the specified symbols
-        df = universe._df.loc[self.symbols].copy()
+        # Personally would never do an in-place modification, so I would use a view
+        # but we'll use a .copy() just in case
+        self.cached_data = universe._df.loc[self.symbols].copy().sort_index()
 
-        # Explicitly rebuild the MultiIndex so that the datetime part is converted.
-        df.index = pd.MultiIndex.from_tuples(
-            [(symbol, pd.to_datetime(dt)) for symbol, dt in df.index],
-            names=df.index.names,
-        )
-
-        # Debug: Print the index and type of the datetime values
-        print("Cached Data Index (after conversion):", df.index)
-        print(
-            "Type of first datetime element:",
-            type(df.index.get_level_values("datetime")[0]),
-        )
-
-        # Sort the index
-        df = df.sort_index()
-
-        # Cache the data
-        self.cached_data = df
-
-    # def get_data_fetcher(
-    #     self, universe: AssetUniverse, **kwargs
-    # ) -> Callable[[datetime], pd.DataFrame]:
-    #     """
-    #     Returns a function that, given a timestamp, returns the last `long_window` bars
-    #     for each symbol. We'll compute SMAs in `generate_orders` below.
-    #     """
-
-    #     def fetch_data(current_time: datetime) -> pd.DataFrame:
-    #         if self.cached_data is None:
-    #             raise ValueError(
-    #                 "Data not cached. Did you forget to call on_simulation_start?"
-    #             )
-
-    #         # Get the earliest date we need to include
-    #         cutoff_date = current_time - pd.DateOffset(days=self.long_window)
-
-    #         # Slice data to include only up to current_time and after cutoff_date
-    #         sliced_data = self.cached_data.loc[
-    #             (slice(None), slice(cutoff_date, current_time))
-    #         ].sort_index()
-
-    #         return sliced_data
-
-    #     return fetch_data
     def get_data_fetcher(
         self, universe: AssetUniverse, **kwargs
     ) -> Callable[[datetime], pd.DataFrame]:
@@ -162,9 +111,8 @@ class SMACrossoverStrategy(Strategy):
             # Calculate the cutoff date.
             cutoff_date = current_time - pd.DateOffset(days=self.long_window)
 
-            # Debug: Print the cutoff_date and current_time
-            print("Cutoff Date:", cutoff_date)
-            print("Current Time:", current_time)
+            # print("Cutoff Date:", cutoff_date)
+            # print("Current Time:", current_time)
 
             # Instead of slicing with pd.IndexSlice, use boolean indexing.
             dt_level = self.cached_data.index.get_level_values("datetime")
