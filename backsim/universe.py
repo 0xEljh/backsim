@@ -3,11 +3,9 @@ AssetUniverse implementation for storing OHLCV data in a multi-index DataFrame.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Callable, Union
 import pandas as pd
-import numpy as np
 
 
 OHLCV_COLS = ["open", "high", "low", "close", "volume"]
@@ -23,7 +21,12 @@ class AssetUniverse:
     Provides multiple classmethods for easy instantiation from user data.
     """
 
-    def __init__(self, df: pd.DataFrame, require_ohlcv=True):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        require_ohlcv=True,
+        price_matrix_builder: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
+    ):
         """
         Initialize with a multi-index DataFrame. Typically, you won't call this directly;
         instead, use a classmethod (e.g. from_dict_of_dataframes, from_flat_df, etc.).
@@ -31,8 +34,10 @@ class AssetUniverse:
         Args:
             df: DataFrame with a MultiIndex (symbol, datetime) and columns = OHLCV_COLS
             require_ohlcv: If True, raise an error if the DataFrame does not have the expected columns.
+            price_matrix_builder: Optional function to build a price matrix from the DataFrame, instead of the default
         """
         self._df = df
+        self._price_matrix_builder = price_matrix_builder
         if require_ohlcv:
             self._validate_df()
 
@@ -169,9 +174,13 @@ class AssetUniverse:
         return list(self._df.index.levels[0])
 
     @property
-    def datetimes(self) -> List[datetime]:
-        """Unique list of datetimes present in the universe."""
-        return list(self._df.index.levels[1])
+    def datetimes(self) -> pd.Series:
+        """Unique datetimes present in the universe as a pandas Series."""
+        unique_datetimes = self._df.index.get_level_values("datetime").unique()
+        unique_datetimes = (
+            pd.Series(unique_datetimes).sort_values().reset_index(drop=True)
+        )
+        return unique_datetimes
 
     @property
     def df(self) -> pd.DataFrame:
@@ -180,32 +189,24 @@ class AssetUniverse:
         """
         return self._df
 
-    def get_price_matrix(
-        self, price_agg_func: Optional[str | callable] = "close"
-    ) -> pd.DataFrame:
+    @property
+    def price_matrix(self) -> pd.DataFrame:
         """
-        Return a price matrix has the form of (symbol, datetime) -> price.
+        Returns the price matrix of the asset universe.
 
-        Args:
-            price_agg_func: Optional function to aggregate price ohlc data (default: "close" )
+        If a custom price_matrix_extractor is provided, it will be used.
+        Otherwise, a default implementation is used that unstacks the
+        DataFrame and selects the 'close' column.
 
         Returns:
-            pd.DataFrame with (symbol, datetime) -> price
+            A pandas DataFrame representing the price matrix, with
+            'datetime' as index and 'symbol' as columns.
         """
-
-        if callable(price_agg_func):
-            return self._df.groupby(level="symbol").agg(price_agg_func).reset_index()
-
-        if price_agg_func not in OHLCV_COLS:
-            raise ValueError(f"Invalid price_agg_func: {price_agg_func}")
-
-        return (
-            self._df
-            # select the price column (open or close)
-            .groupby(level="symbol")
-            .agg({price_agg_func: "last"})
-            .reset_index()
-        )
+        if self._price_matrix_builder:
+            return self._price_matrix_builder(self._df)
+        else:
+            # Default price matrix extraction logic
+            return self._df.unstack(level="symbol").loc[:, "close"]
 
     def slice_data(
         self,
@@ -286,7 +287,12 @@ class QuantityMatrix:
 
     """
 
-    def __init__(self, symbols: List[str], start_time: datetime, frequency: str = "1d"):
+    def __init__(
+        self,
+        symbols: List[str],
+        start_time: datetime,
+        frequency: Union[str, pd.Timedelta] = "1d",
+    ):
         self.symbols = symbols
         self.symbol_to_idx = {symbol: idx for idx, symbol in enumerate(symbols)}
         self.start_time = start_time

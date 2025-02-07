@@ -1,6 +1,10 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 import csv
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backsim.portfolio import Portfolio, Order
 
 
 class PortfolioCallback(ABC):

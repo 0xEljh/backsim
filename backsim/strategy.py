@@ -4,9 +4,9 @@ Base Strategy implementation.
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Dict, List, Any, Callable, Optional
+from typing import Dict, List, Any, Callable, Optional, Union
 import pandas as pd
-from .portfolio import Portfolio
+from .portfolio import Portfolio, Order
 from .universe import AssetUniverse
 
 
@@ -35,17 +35,17 @@ class Strategy(ABC):
     @abstractmethod
     def generate_orders(
         self,
-        price_slice: Dict[str, Dict[str, List[float]]],
+        data_slice,  # can be any data type, up to user
         portfolio: Portfolio,
-        timestamp: datetime,
-    ) -> List[Dict[str, Any]]:
+        current_time: datetime,
+    ) -> List[Union[Dict[str, Any], Order]]:
         """
         Generate orders based on the current data slice and portfolio state.
 
         Args:
-            price_slice: Price/volume data for relevant symbols
+            data_slice: Data slice the strategy acts on
             portfolio: Current portfolio state
-            timestamp: Current simulation timestamp
+            current_time: Current simulation timestamp
 
         Returns:
             List of order dictionaries
@@ -92,7 +92,7 @@ class SMACrossoverStrategy(Strategy):
         """
         # Personally would never do an in-place modification, so I would use a view
         # but we'll use a .copy() just in case
-        self.cached_data = universe._df.loc[self.symbols].copy().sort_index()
+        self.cached_data = universe.df.loc[self.symbols].copy().sort_index()
 
     def get_data_fetcher(
         self, universe: AssetUniverse, **kwargs
@@ -152,7 +152,7 @@ class SMACrossoverStrategy(Strategy):
             .reset_index()
             # Compute the order quantity and determine the side of the order.
             .assign(
-                order_size=portfolio.cash / 10,
+                order_size=portfolio.available_margin / 10,
                 order_quantity=lambda df: (df.order_size / df.close).astype(int),
                 side=lambda df: np.where(
                     df.short_sma > df.long_sma,
