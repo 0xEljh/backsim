@@ -11,7 +11,7 @@ from backsim.portfolio.models import (
     OrderStatus,
     PositionSide,
 )
-from backsim.callbacks import Callback
+from backsim.callback import Callback
 
 import logging
 
@@ -50,6 +50,7 @@ class Portfolio:
             else:
                 # Handle fields with sensible defaults
                 # we purposely avoid pop() here since we don't want to mutate order_dict
+                # TODO: datetime.now() is wrong... need to figure out how best to do this
                 timestamp = order_dict.get("timestamp", datetime.now())
                 order_type = OrderType(order_dict.get("order_type", "MARKET"))
                 leverage_ratio = order_dict.get("leverage_ratio", 1.0)

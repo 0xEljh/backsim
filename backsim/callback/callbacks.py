@@ -1,53 +1,13 @@
-from abc import ABC, abstractmethod
-from datetime import datetime
-from pathlib import Path
+from .callback import Callback
 import csv
+from pathlib import Path
+from datetime import datetime
 from typing import TYPE_CHECKING
 from backsim.portfolio.models import OrderSide
 
 if TYPE_CHECKING:
     from backsim.engine.engine import SimulationEngine
     from backsim.portfolio import Portfolio, Order
-
-
-class Callback(ABC):
-    """
-    Base callback interface for the simulation engine.
-    Callbacks can be used for logging, monitoring, or any side effects.
-    """
-
-    # @abstractmethod
-    def on_simulation_start(self, engine: "SimulationEngine"):
-        pass
-
-    # @abstractmethod
-    def on_step_start(self, engine: "SimulationEngine", timestamp: datetime):
-        pass
-
-    # @abstractmethod
-    def on_step_end(self, engine: "SimulationEngine", timestamp: datetime):
-        pass
-
-    # @abstractmethod
-    def on_simulation_end(self, engine: "SimulationEngine"):
-        pass
-
-    # @abstractmethod
-    def on_order_filled(self, portfolio: "Portfolio", order: "Order", realized_pnl):
-        """
-        Called when an order is completely or partially filled.
-        :param portfolio: The Portfolio instance.
-        :param order: The Order that was filled.
-        :param realized_pnl: Realized profit and loss from the fill.
-        """
-        pass
-
-    # @abstractmethod
-    def on_prices_update(self, portfolio: "Portfolio"):
-        """
-        Called when an order is closed (terminal state).
-        """
-        pass
 
 
 class LoggingCallback(Callback):

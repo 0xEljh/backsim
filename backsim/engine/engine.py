@@ -10,7 +10,7 @@ from backsim.universe import AssetUniverse, QuantityMatrix
 from backsim.portfolio import Portfolio
 from backsim.broker import Broker
 from backsim.strategy import Strategy
-from backsim.callbacks import Callback
+from backsim.callback import Callback
 from tqdm import tqdm
 import logging
 
@@ -30,7 +30,7 @@ class SimulationEngine:
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
         callbacks: Optional[List[Callback]] = None,
-        epoch_size: int = 100
+        epoch_size: int = 100,
     ):
         self.initial_cash = initial_cash
         self.step_size = step_size

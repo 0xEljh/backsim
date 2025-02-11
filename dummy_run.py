@@ -7,7 +7,8 @@ from backsim.portfolio import Portfolio
 from backsim.broker import Broker
 from backsim.strategy import SMACrossoverStrategy
 from backsim.engine import SimulationEngine
-from backsim.callbacks import LoggingCallback
+from backsim.callback import LoggingCallback
+from backsim.callback.stats_collector import StatsCollectorCallback
 import logging
 
 logger = logging.getLogger(__name__)
@@ -70,15 +71,24 @@ if __name__ == "__main__":
     universe = AssetUniverse.from_dict_of_dataframes(data)
     strategy = SMACrossoverStrategy(symbols=symbols, short_window=12, long_window=26)
 
+    stats_callback = StatsCollectorCallback()
+
     backsim = SimulationEngine(
         start_time=datetime(2023, 1, 1),
         end_time=datetime(2023, 6, 30),
         step_size=freq,
         initial_cash=100000,
-        callbacks=[LoggingCallback(logger)],
+        callbacks=[LoggingCallback(logger), stats_callback],
         epoch_size=50,
     )
 
     portfolio = backsim.run(strategies=[strategy], asset_universe=universe)
 
     print(portfolio.portfolio_value)
+
+    # compute stats
+    df_timeseries = stats_callback.get_timeseries_df()
+    print("Sharpe ratio:", stats_callback.compute_sharpe_ratio())
+    print("Max Drawdown:", stats_callback.compute_max_drawdown())
+
+    stats_callback.plot_portfolio_value()
