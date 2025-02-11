@@ -11,7 +11,7 @@ from backsim.portfolio.models import (
     OrderStatus,
     PositionSide,
 )
-from backsim.portfolio.callbacks import PortfolioCallback, LoggingCallback
+from backsim.callbacks import Callback
 
 import logging
 
@@ -27,7 +27,7 @@ class Portfolio:
         self,
         initial_cash: float,
         quantity_matrix: QuantityMatrix,
-        callbacks: Optional[List[PortfolioCallback]] = None,
+        callbacks: Optional[List[Callback]] = None,
     ):
         self._cash: float = initial_cash
         self.positions: Dict[str, Position] = {}
@@ -35,9 +35,7 @@ class Portfolio:
         self.closed_orders: List[Order] = []
         self.quantity_matrix: QuantityMatrix = quantity_matrix
         self.latest_prices: Optional[Union[np.ndarray, pd.Series]] = None
-        self.callbacks = (
-            callbacks if callbacks is not None else [LoggingCallback(logger)]
-        )  # add default logging callback
+        self.callbacks = callbacks or []
 
     def add_orders(self, orders: List[Union[Order, dict]]):
         """
@@ -258,7 +256,7 @@ class Portfolio:
             self.open_orders.remove(order)
             self.closed_orders.append(order)
 
-    def register_callback(self, callback: PortfolioCallback):
+    def register_callback(self, callback: Callback):
         """Allow users to register additional callbacks."""
         self.callbacks.append(callback)
 

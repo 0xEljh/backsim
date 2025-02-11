@@ -1,14 +1,38 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 from pathlib import Path
 import csv
 from typing import TYPE_CHECKING
+from backsim.portfolio.models import OrderSide
 
 if TYPE_CHECKING:
+    from backsim.engine.engine import SimulationEngine
     from backsim.portfolio import Portfolio, Order
 
 
-class PortfolioCallback(ABC):
-    @abstractmethod
+class Callback(ABC):
+    """
+    Base callback interface for the simulation engine.
+    Callbacks can be used for logging, monitoring, or any side effects.
+    """
+
+    # @abstractmethod
+    def on_simulation_start(self, engine: "SimulationEngine"):
+        pass
+
+    # @abstractmethod
+    def on_step_start(self, engine: "SimulationEngine", timestamp: datetime):
+        pass
+
+    # @abstractmethod
+    def on_step_end(self, engine: "SimulationEngine", timestamp: datetime):
+        pass
+
+    # @abstractmethod
+    def on_simulation_end(self, engine: "SimulationEngine"):
+        pass
+
+    # @abstractmethod
     def on_order_filled(self, portfolio: "Portfolio", order: "Order", realized_pnl):
         """
         Called when an order is completely or partially filled.
@@ -18,7 +42,7 @@ class PortfolioCallback(ABC):
         """
         pass
 
-    @abstractmethod
+    # @abstractmethod
     def on_prices_update(self, portfolio: "Portfolio"):
         """
         Called when an order is closed (terminal state).
@@ -26,25 +50,36 @@ class PortfolioCallback(ABC):
         pass
 
 
-class LoggingCallback(PortfolioCallback):
+class LoggingCallback(Callback):
+    """Example callback implementation for logging key events"""
+
     def __init__(self, logger):
-        super().__init__()
         self.logger = logger
 
-    def on_order_filled(self, portfolio: "Portfolio", order: "Order", realized_pnl):
-        self.logger.info(f"Order filled: {order} Realized PnL: {realized_pnl}")
+    def on_simulation_start(self, engine: "SimulationEngine"):
+        self.logger.info("🚀 Simulation started")
 
-    def on_prices_update(self, portfolio: "Portfolio"):
+    def on_step_start(self, engine: "SimulationEngine", timestamp: datetime):
+        self.logger.info(f"⏲️ Step started at {timestamp}")
+
+    def on_order_filled(self, portfolio, order, realized_pnl):
         self.logger.info(
-            f"Portfolio update with new prices\nPortfolio value: {portfolio.portfolio_value}\nMargin available: {portfolio.available_margin}"
+            # f"💰 Order filled at {timestamp}: {order} "
+            f"Realized PnL: {realized_pnl:.2f} from {"buying" if order.side == OrderSide.BUY else "selling"} {order.symbol}"
         )
 
+    def on_prices_update(self, portfolio):
+        self.logger.info(
+            # f"📈 Prices updated at {timestamp}\n"
+            f"Value: {portfolio.portfolio_value:.2f} | "
+            f"Margin: {portfolio.available_margin:.2f}"
+        )
 
-# TODO: perhaps consider a more global artifact saver
-# that way, we also have a more definite global place to save the artifacts to
+    def on_simulation_end(self, engine: "SimulationEngine"):
+        self.logger.info("🏁 Simulation ended")
 
 
-class BacktestArtifactSaver:
+class BacktestArtifactSaver(Callback):
     def __init__(self, output_dir: str = "backtest_artifacts"):
         """
         Initialize the artifact saver.
@@ -66,6 +101,8 @@ class BacktestArtifactSaver:
         """Write headers to CSV files."""
         with open(self.orders_file, "w") as f:
             writer = csv.writer(f)
+            # TODO: this way of doing it is not extensible, update it
+            # can use a more pythonic method
             writer.writerow(
                 [
                     "timestamp",

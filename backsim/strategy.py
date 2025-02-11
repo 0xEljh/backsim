@@ -28,7 +28,7 @@ class Strategy(ABC):
         """
         pass
 
-    def on_end(self):
+    def on_simulation_end(self):
         """Optional: cleanup, logging, etc."""
         pass
 
@@ -152,7 +152,7 @@ class SMACrossoverStrategy(Strategy):
             .reset_index()
             # Compute the order quantity and determine the side of the order.
             .assign(
-                order_size=portfolio.available_margin / 10,
+                order_size=portfolio.available_margin / 20,
                 order_quantity=lambda df: (df.order_size / df.close).astype(int),
                 side=lambda df: np.where(
                     df.short_sma > df.long_sma,

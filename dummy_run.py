@@ -7,6 +7,10 @@ from backsim.portfolio import Portfolio
 from backsim.broker import Broker
 from backsim.strategy import SMACrossoverStrategy
 from backsim.engine import SimulationEngine
+from backsim.callbacks import LoggingCallback
+import logging
+
+logger = logging.getLogger(__name__)
 
 OHLCV_COLS = ["open", "high", "low", "close", "volume"]
 
@@ -58,26 +62,23 @@ if __name__ == "__main__":
         "XRP",
         "ADA",
     ]
-    data = generate_sample_data(symbols, "2023-01-01", "2023-06-30", "1h")
-    freq = pd.Timedelta(hours=1)
+    start_date = "2023-01-01"
+    end_date = "2023-06-30"
+    freq = pd.Timedelta(days=1)
+    data = generate_sample_data(symbols, start_date, end_date, freq)
 
     universe = AssetUniverse.from_dict_of_dataframes(data)
-    quantity_matrix = QuantityMatrix(
-        symbols=symbols, start_time=universe.datetimes[0], frequency=freq
-    )
-    portfolio = Portfolio(initial_cash=100000, quantity_matrix=quantity_matrix)
-    broker = Broker(universe)
     strategy = SMACrossoverStrategy(symbols=symbols, short_window=12, long_window=26)
 
-    engine = SimulationEngine(
-        universe=universe,
-        portfolio=portfolio,
-        broker=broker,
-        strategies=[strategy],
+    backsim = SimulationEngine(
+        start_time=datetime(2023, 1, 1),
+        end_time=datetime(2023, 6, 30),
         step_size=freq,
+        initial_cash=100000,
+        callbacks=[LoggingCallback(logger)],
+        epoch_size=50,
     )
 
-    engine.run()
+    portfolio = backsim.run(strategies=[strategy], asset_universe=universe)
 
-    print(f"Final Portfolio Value: {portfolio.portfolio_value:.2f}")
-    print(f"Total Return: {(portfolio.portfolio_value / 100000 - 1):.2%}")
+    print(portfolio.portfolio_value)
