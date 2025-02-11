@@ -4,40 +4,36 @@ import pytest
 from backsim.universe import AssetUniverse
 from backsim.strategy import SMACrossoverStrategy
 
+
 def build_test_universe_data():
     """Helper function to create a small test universe with synthetic data."""
     # Create date range for 10 days to have enough data for moving averages
-    dates = pd.date_range(start='2023-01-01', periods=10, freq='D')
-    symbols = ['AAPL', 'MSFT']
-    
+    dates = pd.date_range(start="2023-01-01", periods=10, freq="D")
+    symbols = ["AAPL", "MSFT"]
+
     # Create multi-index for the DataFrame with correct order (symbol, datetime)
     index = pd.MultiIndex.from_product(
         [symbols, dates],  # Note: symbols first, then dates
-        names=['symbol', 'datetime']  # Note: symbol first, then datetime
+        names=["symbol", "datetime"],  # Note: symbol first, then datetime
     )
-    
+
     # Generate some synthetic price data
     np.random.seed(42)  # For reproducibility
     n_rows = len(dates) * len(symbols)
     data = {
-        'open': np.random.uniform(100, 200, n_rows),
-        'high': np.random.uniform(100, 200, n_rows),
-        'low': np.random.uniform(100, 200, n_rows),
-        'close': np.random.uniform(100, 200, n_rows),
-        'volume': np.random.randint(1000, 10000, n_rows)
+        "open": np.random.uniform(100, 200, n_rows),
+        "high": np.random.uniform(100, 200, n_rows),
+        "low": np.random.uniform(100, 200, n_rows),
+        "close": np.random.uniform(100, 200, n_rows),
+        "volume": np.random.randint(1000, 10000, n_rows),
     }
-    
+
     # Ensure high is highest and low is lowest for each row
-    data['high'] = np.maximum(
-        np.maximum(data['open'], data['close']),
-        data['high']
-    )
-    data['low'] = np.minimum(
-        np.minimum(data['open'], data['close']),
-        data['low']
-    )
-    
+    data["high"] = np.maximum(np.maximum(data["open"], data["close"]), data["high"])
+    data["low"] = np.minimum(np.minimum(data["open"], data["close"]), data["low"])
+
     return pd.DataFrame(data, index=index)
+
 
 def test_on_simulation_start():
     # Create a tiny in-memory universe (2 symbols, 10 days)
@@ -51,6 +47,7 @@ def test_on_simulation_start():
     assert not strategy.cached_data.empty
     assert "AAPL" in strategy.cached_data.index.get_level_values("symbol")
     assert len(strategy.cached_data.index.get_level_values("datetime").unique()) == 10
+
 
 def test_get_data_fetcher():
     df = build_test_universe_data()
@@ -72,6 +69,7 @@ def test_get_data_fetcher():
     max_dt = sliced_data.index.get_level_values("datetime").max()
     assert max_dt <= test_timestamp
 
+
 def test_generate_orders():
     df = build_test_universe_data()
     universe = AssetUniverse(df)
@@ -83,9 +81,10 @@ def test_generate_orders():
 
     # Build a minimal mock Portfolio
     class MockPortfolio:
-        def __init__(self, cash):
-            self.cash = cash
-    portfolio = MockPortfolio(cash=10000)
+        def __init__(self, available_margin):
+            self.available_margin = available_margin
+
+    portfolio = MockPortfolio(available_margin=10000)
 
     # Pick a timestamp in the middle of our data range
     current_time = pd.Timestamp("2023-01-06")
@@ -104,6 +103,7 @@ def test_generate_orders():
             # side is either BUY or SELL
             assert order["side"] in ["BUY", "SELL"]
 
+
 def test_generate_orders_empty_slice():
     df = build_test_universe_data()
     universe = AssetUniverse(df)
@@ -112,11 +112,14 @@ def test_generate_orders_empty_slice():
     strategy.on_simulation_start(universe)
 
     data_slice = pd.DataFrame()  # simulate no data
-    mock_portfolio = type("MockPortfolio", (), {"cash": 10000})()
+    mock_portfolio = type("MockPortfolio", (), {"available_margin": 10000})()
 
     # Test with a timestamp outside our data range
-    orders = strategy.generate_orders(data_slice, mock_portfolio, pd.Timestamp("2023-01-15"))
+    orders = strategy.generate_orders(
+        data_slice, mock_portfolio, pd.Timestamp("2023-01-15")
+    )
     assert orders == []  # Expect no orders if there's no data
+
 
 def test_on_simulation_end(capfd):
     df = build_test_universe_data()
